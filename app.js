@@ -78,7 +78,7 @@ const WITHIN_ALL_LEVEL_LABELS = {
   dist_hint_applied: "All applied hint modes",
   env_hint: "All environment hints",
 };
-const WITHIN_ALL_COMPARISONS_LABEL = "All pairwise comparisons";
+const WITHIN_ALL_COMPARISONS_LABEL = "Each level once (vs rest)";
 
 const fmtInt = value => new Intl.NumberFormat("en-US").format(value || 0);
 const fmtNum = value => Number.isFinite(value) ? value.toFixed(3) : "-";
@@ -618,6 +618,21 @@ function withinMatchedPairsFor(model, field, levelA, levelB) {
   if (!model || !field || !levelA || !levelB) {
     return [];
   }
+  if (levelA === WITHIN_ALL_LEVEL) {
+    const groups = new Map();
+    rows.forEach(row => {
+      if (row.model !== model || !row.answered) return;
+      const level = levelValue(row[field]);
+      const key = withinMatchKey(row, field);
+      const group = groups.get(key) || { aRows: [] };
+      if (level === levelB) group.b = row;
+      else group.aRows.push(row);
+      groups.set(key, group);
+    });
+    return [...groups.values()]
+      .filter(group => group.b && group.aRows.length)
+      .flatMap(group => group.aRows.map(aRow => ({ a: aRow, b: group.b })));
+  }
   const groups = new Map();
   rows.forEach(row => {
     if (row.model !== model || !row.answered) return;
@@ -638,6 +653,26 @@ function withinMatchedPairs(model) {
     selectedWithinTestField,
     selectedWithinTestLevelA,
     selectedWithinTestLevelB
+  );
+}
+
+function concreteWithinAllSelections(selectedModels, field) {
+  if (!selectedModels.length || !field) return [];
+  const levels = [...new Set(
+    selectedModels.flatMap(model => uniqueSorted(field, rows.filter(row => row.model === model)))
+  )].sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    return withinLevelLabel(field, a).localeCompare(withinLevelLabel(field, b));
+  });
+  return levels.map(level => {
+    const minCount = Math.min(...selectedModels.map(model =>
+      withinMatchedPairsFor(model, field, WITHIN_ALL_LEVEL, level).length
+    ));
+    return { a: WITHIN_ALL_LEVEL, b: level, count: minCount };
+  }).filter(item => item.count).sort((left, right) =>
+    right.count - left.count || withinLevelLabel(field, left.b).localeCompare(withinLevelLabel(field, right.b))
   );
 }
 
@@ -699,8 +734,8 @@ function validWithinComparisons(selectedModels, field) {
     ));
     return { a, b, count: minCount };
   }).concat(
-    concreteWithinComparisons(selectedModels, field).length
-      ? [{ a: WITHIN_ALL_LEVEL, b: WITHIN_ALL_COMPARISONS, count: concreteWithinComparisons(selectedModels, field).reduce((sum, pair) => sum + pair.count, 0) }]
+    concreteWithinAllSelections(selectedModels, field).length
+      ? [{ a: WITHIN_ALL_LEVEL, b: WITHIN_ALL_COMPARISONS, count: concreteWithinAllSelections(selectedModels, field).reduce((sum, pair) => sum + pair.count, 0) }]
       : []
   ).sort((left, right) => {
     if (left.a === WITHIN_ALL_LEVEL) return -1;
@@ -1406,7 +1441,7 @@ function renderWithinTests() {
   const labelB = withinLevelLabel(selectedWithinTestField, selectedWithinTestLevelB);
   const comparison = `${labelA} - ${labelB}`;
   const comparisons = allMode
-    ? concreteWithinComparisons(selectedWithinTestModels, selectedWithinTestField)
+    ? concreteWithinAllSelections(selectedWithinTestModels, selectedWithinTestField)
     : [{ a: selectedWithinTestLevelA, b: selectedWithinTestLevelB }];
   const panelData = comparisons.flatMap((comparisonItem, comparisonIndex) =>
     selectedWithinTestModels.map((model, modelIndex) => {
@@ -1428,7 +1463,7 @@ function renderWithinTests() {
   document.querySelector("#completeCount").textContent = fmtInt(totalPairs);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
   const pooledNote = allMode
-    ? `${labelA} shows every exact matched pairwise comparison for ${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()} in separate panels.`
+    ? `${labelA} shows each concrete ${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()} level once, with that level compared against the pool of the remaining matched levels.`
     : "The controls only show level pairs that have exact matches for the selected LLMs.";
   document.querySelector("#withinTestsNote").innerHTML =
     `<strong>${fmtInt(totalPairs)} matched within-model pairs</strong><span>${allMode ? `Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> across all available levels.` : `Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> levels ${labelA} and ${labelB}.`} ${pooledNote} Each pair is identical on every benchmark input column except ${GROUP_OPTIONS[selectedWithinTestField]}; <code>variant</code> is ignored because it labels the condition.</span>`;
@@ -1444,10 +1479,10 @@ function renderWithinTests() {
     pValue: evidence.tP,
   }));
   document.querySelector("#withinTestCombinedTitle").textContent = allMode
-    ? `${GROUP_OPTIONS[selectedWithinTestField]}: all matched pairwise mean losses`
+    ? `${GROUP_OPTIONS[selectedWithinTestField]}: each level once against the rest`
     : `${GROUP_OPTIONS[selectedWithinTestField]}: matched mean loss`;
   document.querySelector("#withinTestCombinedNote").textContent = allMode
-    ? `${fmtInt(comparisons.length)} pairwise comparisons shown across the selected LLMs${selectedWithinTestField === "env_hint" ? "; seasonal cases only" : ""}`
+    ? `${fmtInt(comparisons.length)} concrete levels shown once across the selected LLMs${selectedWithinTestField === "env_hint" ? "; seasonal cases only" : ""}`
     : selectedWithinTestField === "env_hint"
       ? `${labelA} and ${labelB} shown side by side for each LLM; seasonal cases only`
       : `${labelA} and ${labelB} shown side by side for each LLM`;

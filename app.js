@@ -60,6 +60,24 @@ const TEST_FILTER_FIELDS = [
   "env_hint",
 ];
 
+const WITHIN_ALL_LEVEL = "__all_levels__";
+const WITHIN_ALL_LEVEL_LABELS = {
+  scenario_subtype: "All scenarios",
+  demand_model: "All demand models",
+  history_length: "All history lengths",
+  sigma: "All noise levels",
+  parameter_set: "All parameter sets",
+  has_environment: "All environment settings",
+  next_env: "All next environments",
+  mc: "All marginal costs",
+  p_c_current: "All competitor prices",
+  role: "All expert roles",
+  product_context: "All product contexts",
+  dist_hint: "All distribution hints",
+  dist_hint_applied: "All applied hint modes",
+  env_hint: "All environment hints",
+};
+
 const fmtInt = value => new Intl.NumberFormat("en-US").format(value || 0);
 const fmtNum = value => Number.isFinite(value) ? value.toFixed(3) : "-";
 const fmtPct = value => Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "-";
@@ -188,6 +206,14 @@ function displayLevel(value) {
   if (text === "TRUE") return "Yes";
   if (text === "FALSE") return "No";
   return text.replaceAll("_", " ");
+}
+
+function withinAllLabel(field) {
+  return WITHIN_ALL_LEVEL_LABELS[field] || `All ${GROUP_OPTIONS[field]}`;
+}
+
+function withinLevelLabel(field, value) {
+  return value === WITHIN_ALL_LEVEL ? withinAllLabel(field) : displayLevel(value);
 }
 
 function modelMeta(model) {
@@ -530,8 +556,12 @@ function populateWithinTestControls() {
   const levelBOptions = validPairs
     .filter(pair => pair.a === selectedWithinTestLevelA)
     .map(pair => pair.b);
-  levelA.innerHTML = levelAOptions.map(level => `<option value="${level}">${displayLevel(level)}</option>`).join("");
-  levelB.innerHTML = levelBOptions.map(level => `<option value="${level}">${displayLevel(level)}</option>`).join("");
+  levelA.innerHTML = levelAOptions
+    .map(level => `<option value="${level}">${withinLevelLabel(selectedWithinTestField, level)}</option>`)
+    .join("");
+  levelB.innerHTML = levelBOptions
+    .map(level => `<option value="${level}">${withinLevelLabel(selectedWithinTestField, level)}</option>`)
+    .join("");
   levelA.value = selectedWithinTestLevelA;
   if (!levelBOptions.includes(selectedWithinTestLevelB)) selectedWithinTestLevelB = levelBOptions[0] || "";
   levelB.value = selectedWithinTestLevelB;
@@ -570,6 +600,23 @@ function withinMatchedPairsFor(model, field, levelA, levelB) {
   if (!model || !field || !levelA || !levelB) {
     return [];
   }
+
+  if (levelA === WITHIN_ALL_LEVEL) {
+    const groups = new Map();
+    rows.forEach(row => {
+      if (row.model !== model || !row.answered) return;
+      const level = levelValue(row[field]);
+      const key = withinMatchKey(row, field);
+      const group = groups.get(key) || { aRows: [] };
+      if (level === levelB) group.b = row;
+      else group.aRows.push(row);
+      groups.set(key, group);
+    });
+    return [...groups.values()]
+      .filter(group => group.b && group.aRows.length)
+      .flatMap(group => group.aRows.map(aRow => ({ a: aRow, b: group.b })));
+  }
+
   const groups = new Map();
   rows.forEach(row => {
     if (row.model !== model || !row.answered) return;
@@ -607,6 +654,10 @@ function validWithinComparisons(selectedModels, field) {
         if (count) pairs.push({ a, b, count });
       }
     }
+    levels.forEach(level => {
+      const count = withinMatchedPairsFor(model, field, WITHIN_ALL_LEVEL, level).length;
+      if (count) pairs.push({ a: WITHIN_ALL_LEVEL, b: level, count });
+    });
     return pairs;
   });
   const commonKeys = new Set(perModel[0].map(pair => `${pair.a}|||${pair.b}`));
@@ -1317,8 +1368,8 @@ function renderTests() {
 
 function renderWithinTests() {
   populateWithinTestControls();
-  const labelA = displayLevel(selectedWithinTestLevelA);
-  const labelB = displayLevel(selectedWithinTestLevelB);
+  const labelA = withinLevelLabel(selectedWithinTestField, selectedWithinTestLevelA);
+  const labelB = withinLevelLabel(selectedWithinTestField, selectedWithinTestLevelB);
   const comparison = `${labelA} - ${labelB}`;
   const panelData = selectedWithinTestModels.map((model, index) => {
     const pairs = withinMatchedPairs(model);
@@ -1335,8 +1386,11 @@ function renderWithinTests() {
   document.querySelector("#caseCount").textContent = fmtInt(totalPairs);
   document.querySelector("#completeCount").textContent = fmtInt(totalPairs);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
+  const pooledNote = selectedWithinTestLevelA === WITHIN_ALL_LEVEL
+    ? `${labelA} pools every matched answered row from the other ${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()} levels against ${labelB}.`
+    : "The controls only show level pairs that have exact matches for the selected LLMs.";
   document.querySelector("#withinTestsNote").innerHTML =
-    `<strong>${fmtInt(totalPairs)} matched within-model pairs</strong><span>Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> levels ${labelA} and ${labelB}. The controls only show level pairs that have exact matches for the selected LLMs. Each pair is identical on every benchmark input column except ${GROUP_OPTIONS[selectedWithinTestField]}; <code>variant</code> is ignored because it labels the condition.</span>`;
+    `<strong>${fmtInt(totalPairs)} matched within-model pairs</strong><span>Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> levels ${labelA} and ${labelB}. ${pooledNote} Each pair is identical on every benchmark input column except ${GROUP_OPTIONS[selectedWithinTestField]}; <code>variant</code> is ignored because it labels the condition.</span>`;
 
   const combinedItems = panelData.map(({ model, pairs, evidence }) => ({
     title: modelMeta(model).short,

@@ -61,6 +61,7 @@ const TEST_FILTER_FIELDS = [
 ];
 
 const WITHIN_ALL_LEVEL = "__all_levels__";
+const WITHIN_ALL_COMPARISONS = "__all_comparisons__";
 const WITHIN_ALL_LEVEL_LABELS = {
   scenario_subtype: "All scenarios",
   demand_model: "All demand models",
@@ -77,6 +78,7 @@ const WITHIN_ALL_LEVEL_LABELS = {
   dist_hint_applied: "All applied hint modes",
   env_hint: "All environment hints",
 };
+const WITHIN_ALL_COMPARISONS_LABEL = "All pairwise comparisons";
 
 const fmtInt = value => new Intl.NumberFormat("en-US").format(value || 0);
 const fmtNum = value => Number.isFinite(value) ? value.toFixed(3) : "-";
@@ -213,6 +215,7 @@ function withinAllLabel(field) {
 }
 
 function withinLevelLabel(field, value) {
+  if (value === WITHIN_ALL_COMPARISONS) return WITHIN_ALL_COMPARISONS_LABEL;
   return value === WITHIN_ALL_LEVEL ? withinAllLabel(field) : displayLevel(value);
 }
 
@@ -542,20 +545,34 @@ function populateWithinTestControls() {
   fieldPicker.value = selectedWithinTestField;
 
   const validPairs = validWithinComparisons(selectedWithinTestModels, selectedWithinTestField);
-  if (!validPairs.some(pair => pair.a === selectedWithinTestLevelA && pair.b === selectedWithinTestLevelB)) {
+  const hasAllOption = validPairs.some(pair => pair.a === WITHIN_ALL_LEVEL);
+  const selectionIsValid = selectedWithinTestLevelA === WITHIN_ALL_LEVEL
+    ? hasAllOption
+    : validPairs.some(pair => pair.a === selectedWithinTestLevelA && pair.b === selectedWithinTestLevelB);
+  if (!selectionIsValid) {
     const preferredPair = selectedWithinTestField === "dist_hint_applied"
       ? validPairs.find(pair => pair.a === "none" && pair.b === "family")
       : null;
-    selectedWithinTestLevelA = preferredPair?.a || validPairs[0]?.a || "";
-    selectedWithinTestLevelB = preferredPair?.b || validPairs[0]?.b || "";
+    const defaultPair = validPairs.find(pair => pair.a !== WITHIN_ALL_LEVEL) || validPairs[0];
+    selectedWithinTestLevelA = preferredPair?.a || defaultPair?.a || "";
+    selectedWithinTestLevelB = preferredPair?.b || defaultPair?.b || "";
+  } else if (selectedWithinTestLevelA === WITHIN_ALL_LEVEL) {
+    selectedWithinTestLevelB = WITHIN_ALL_COMPARISONS;
   }
 
   const levelA = document.querySelector("#withinTestLevelA");
   const levelB = document.querySelector("#withinTestLevelB");
-  const levelAOptions = [...new Set(validPairs.map(pair => pair.a))];
-  const levelBOptions = validPairs
-    .filter(pair => pair.a === selectedWithinTestLevelA)
-    .map(pair => pair.b);
+  const levelAOptions = [...new Set(validPairs.map(pair => pair.a))]
+    .sort((left, right) => {
+      if (left === WITHIN_ALL_LEVEL) return -1;
+      if (right === WITHIN_ALL_LEVEL) return 1;
+      return withinLevelLabel(selectedWithinTestField, left).localeCompare(withinLevelLabel(selectedWithinTestField, right));
+    });
+  const levelBOptions = selectedWithinTestLevelA === WITHIN_ALL_LEVEL
+    ? [WITHIN_ALL_COMPARISONS]
+    : validPairs
+      .filter(pair => pair.a === selectedWithinTestLevelA)
+      .map(pair => pair.b);
   levelA.innerHTML = levelAOptions
     .map(level => `<option value="${level}">${withinLevelLabel(selectedWithinTestField, level)}</option>`)
     .join("");
@@ -565,6 +582,7 @@ function populateWithinTestControls() {
   levelA.value = selectedWithinTestLevelA;
   if (!levelBOptions.includes(selectedWithinTestLevelB)) selectedWithinTestLevelB = levelBOptions[0] || "";
   levelB.value = selectedWithinTestLevelB;
+  levelB.disabled = selectedWithinTestLevelA === WITHIN_ALL_LEVEL;
 }
 
 function passesFilters(row) {
@@ -600,23 +618,6 @@ function withinMatchedPairsFor(model, field, levelA, levelB) {
   if (!model || !field || !levelA || !levelB) {
     return [];
   }
-
-  if (levelA === WITHIN_ALL_LEVEL) {
-    const groups = new Map();
-    rows.forEach(row => {
-      if (row.model !== model || !row.answered) return;
-      const level = levelValue(row[field]);
-      const key = withinMatchKey(row, field);
-      const group = groups.get(key) || { aRows: [] };
-      if (level === levelB) group.b = row;
-      else group.aRows.push(row);
-      groups.set(key, group);
-    });
-    return [...groups.values()]
-      .filter(group => group.b && group.aRows.length)
-      .flatMap(group => group.aRows.map(aRow => ({ a: aRow, b: group.b })));
-  }
-
   const groups = new Map();
   rows.forEach(row => {
     if (row.model !== model || !row.answered) return;
@@ -640,6 +641,34 @@ function withinMatchedPairs(model) {
   );
 }
 
+function concreteWithinComparisons(selectedModels, field) {
+  if (!selectedModels.length || !field) return [];
+  const levels = [...new Set(
+    selectedModels.flatMap(model => uniqueSorted(field, rows.filter(row => row.model === model)))
+  )].sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    return withinLevelLabel(field, a).localeCompare(withinLevelLabel(field, b));
+  });
+  const comparisons = [];
+  for (let i = 0; i < levels.length; i += 1) {
+    for (let j = i + 1; j < levels.length; j += 1) {
+      const a = levels[i];
+      const b = levels[j];
+      const minCount = Math.min(...selectedModels.map(model =>
+        withinMatchedPairsFor(model, field, a, b).length
+      ));
+      if (minCount) comparisons.push({ a, b, count: minCount });
+    }
+  }
+  return comparisons.sort((left, right) =>
+    right.count - left.count
+      || withinLevelLabel(field, left.a).localeCompare(withinLevelLabel(field, right.a))
+      || withinLevelLabel(field, left.b).localeCompare(withinLevelLabel(field, right.b))
+  );
+}
+
 function validWithinComparisons(selectedModels, field) {
   if (!selectedModels.length || !field) return [];
   const perModel = selectedModels.map(model => {
@@ -654,10 +683,6 @@ function validWithinComparisons(selectedModels, field) {
         if (count) pairs.push({ a, b, count });
       }
     }
-    levels.forEach(level => {
-      const count = withinMatchedPairsFor(model, field, WITHIN_ALL_LEVEL, level).length;
-      if (count) pairs.push({ a: WITHIN_ALL_LEVEL, b: level, count });
-    });
     return pairs;
   });
   const commonKeys = new Set(perModel[0].map(pair => `${pair.a}|||${pair.b}`));
@@ -673,7 +698,15 @@ function validWithinComparisons(selectedModels, field) {
       pairs.find(pair => pair.a === a && pair.b === b)?.count || 0
     ));
     return { a, b, count: minCount };
-  }).sort((left, right) => right.count - left.count || displayLevel(left.a).localeCompare(displayLevel(right.a)));
+  }).concat(
+    concreteWithinComparisons(selectedModels, field).length
+      ? [{ a: WITHIN_ALL_LEVEL, b: WITHIN_ALL_COMPARISONS, count: concreteWithinComparisons(selectedModels, field).reduce((sum, pair) => sum + pair.count, 0) }]
+      : []
+  ).sort((left, right) => {
+    if (left.a === WITHIN_ALL_LEVEL) return -1;
+    if (right.a === WITHIN_ALL_LEVEL) return 1;
+    return right.count - left.count || withinLevelLabel(field, left.a).localeCompare(withinLevelLabel(field, right.a));
+  });
 }
 
 function comparableCases(filterFn = passesFilters) {
@@ -1368,54 +1401,66 @@ function renderTests() {
 
 function renderWithinTests() {
   populateWithinTestControls();
+  const allMode = selectedWithinTestLevelA === WITHIN_ALL_LEVEL;
   const labelA = withinLevelLabel(selectedWithinTestField, selectedWithinTestLevelA);
   const labelB = withinLevelLabel(selectedWithinTestField, selectedWithinTestLevelB);
   const comparison = `${labelA} - ${labelB}`;
-  const panelData = selectedWithinTestModels.map((model, index) => {
-    const pairs = withinMatchedPairs(model);
-    const diffs = pairs.map(pair => pair.a.rel_rev_loss - pair.b.rel_rev_loss).filter(Number.isFinite);
-    return {
-      model,
-      pairs,
-      diffs,
-      evidence: pairedDifferenceEvidenceFromDiffs(diffs, 38177 + index * 97),
-    };
-  });
+  const comparisons = allMode
+    ? concreteWithinComparisons(selectedWithinTestModels, selectedWithinTestField)
+    : [{ a: selectedWithinTestLevelA, b: selectedWithinTestLevelB }];
+  const panelData = comparisons.flatMap((comparisonItem, comparisonIndex) =>
+    selectedWithinTestModels.map((model, modelIndex) => {
+      const pairs = withinMatchedPairsFor(model, selectedWithinTestField, comparisonItem.a, comparisonItem.b);
+      const diffs = pairs.map(pair => pair.a.rel_rev_loss - pair.b.rel_rev_loss).filter(Number.isFinite);
+      return {
+        model,
+        comparison: comparisonItem,
+        comparisonLabel: `${withinLevelLabel(selectedWithinTestField, comparisonItem.a)} - ${withinLevelLabel(selectedWithinTestField, comparisonItem.b)}`,
+        pairs,
+        diffs,
+        evidence: pairedDifferenceEvidenceFromDiffs(diffs, 38177 + comparisonIndex * 997 + modelIndex * 97),
+      };
+    })
+  );
   const totalPairs = panelData.reduce((sum, item) => sum + item.pairs.length, 0);
 
   document.querySelector("#caseCount").textContent = fmtInt(totalPairs);
   document.querySelector("#completeCount").textContent = fmtInt(totalPairs);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
-  const pooledNote = selectedWithinTestLevelA === WITHIN_ALL_LEVEL
-    ? `${labelA} pools every matched answered row from the other ${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()} levels against ${labelB}.`
+  const pooledNote = allMode
+    ? `${labelA} shows every exact matched pairwise comparison for ${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()} in separate panels.`
     : "The controls only show level pairs that have exact matches for the selected LLMs.";
   document.querySelector("#withinTestsNote").innerHTML =
-    `<strong>${fmtInt(totalPairs)} matched within-model pairs</strong><span>Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> levels ${labelA} and ${labelB}. ${pooledNote} Each pair is identical on every benchmark input column except ${GROUP_OPTIONS[selectedWithinTestField]}; <code>variant</code> is ignored because it labels the condition.</span>`;
+    `<strong>${fmtInt(totalPairs)} matched within-model pairs</strong><span>${allMode ? `Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> across all available levels.` : `Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> levels ${labelA} and ${labelB}.`} ${pooledNote} Each pair is identical on every benchmark input column except ${GROUP_OPTIONS[selectedWithinTestField]}; <code>variant</code> is ignored because it labels the condition.</span>`;
 
-  const combinedItems = panelData.map(({ model, pairs, evidence }) => ({
-    title: modelMeta(model).short,
-    leftLabel: labelA,
-    rightLabel: labelB,
+  const combinedItems = panelData.map(({ model, pairs, evidence, comparison: comparisonItem, comparisonLabel }) => ({
+    title: allMode ? `${modelMeta(model).short} · ${comparisonLabel}` : modelMeta(model).short,
+    leftLabel: withinLevelLabel(selectedWithinTestField, comparisonItem.a),
+    rightLabel: withinLevelLabel(selectedWithinTestField, comparisonItem.b),
     leftMean: mean(pairs.map(pair => pair.a.rel_rev_loss).filter(Number.isFinite)),
     rightMean: mean(pairs.map(pair => pair.b.rel_rev_loss).filter(Number.isFinite)),
     leftClass: "pair-one",
     rightClass: "pair-two",
     pValue: evidence.tP,
   }));
-  document.querySelector("#withinTestCombinedTitle").textContent = `${GROUP_OPTIONS[selectedWithinTestField]}: matched mean loss`;
-  document.querySelector("#withinTestCombinedNote").textContent = selectedWithinTestField === "env_hint"
-    ? `${labelA} and ${labelB} shown side by side for each LLM; seasonal cases only`
-    : `${labelA} and ${labelB} shown side by side for each LLM`;
+  document.querySelector("#withinTestCombinedTitle").textContent = allMode
+    ? `${GROUP_OPTIONS[selectedWithinTestField]}: all matched pairwise mean losses`
+    : `${GROUP_OPTIONS[selectedWithinTestField]}: matched mean loss`;
+  document.querySelector("#withinTestCombinedNote").textContent = allMode
+    ? `${fmtInt(comparisons.length)} pairwise comparisons shown across the selected LLMs${selectedWithinTestField === "env_hint" ? "; seasonal cases only" : ""}`
+    : selectedWithinTestField === "env_hint"
+      ? `${labelA} and ${labelB} shown side by side for each LLM; seasonal cases only`
+      : `${labelA} and ${labelB} shown side by side for each LLM`;
   document.querySelector("#withinTestCombinedChart").innerHTML = renderPairMeanCards(combinedItems, {
     fixedAxis: ["role", "product_context", "history_length", "sigma", "env_hint", "dist_hint_applied"].includes(selectedWithinTestField),
     showPValues: false,
     showValues: true,
   });
 
-  document.querySelector("#withinTestPanels").innerHTML = panelData.map(({ model, pairs, evidence }) => {
+  document.querySelector("#withinTestPanels").innerHTML = panelData.map(({ model, pairs, evidence, comparisonLabel, comparison: comparisonItem }) => {
     const levelRows = [
-      { level: labelA, rows: pairs.map(pair => pair.a) },
-      { level: labelB, rows: pairs.map(pair => pair.b) },
+      { level: withinLevelLabel(selectedWithinTestField, comparisonItem.a), rows: pairs.map(pair => pair.a) },
+      { level: withinLevelLabel(selectedWithinTestField, comparisonItem.b), rows: pairs.map(pair => pair.b) },
     ].map(item => {
       const losses = item.rows.map(row => row.rel_rev_loss).filter(Number.isFinite);
       return {
@@ -1439,7 +1484,7 @@ function renderWithinTests() {
           <span class="model-dot ${meta.colorClass}"></span>
           <div>
             <h2>${model}</h2>
-            <p>${fmtInt(pairs.length)} matched pairs · ${comparison}</p>
+            <p>${fmtInt(pairs.length)} matched pairs · ${comparisonLabel}</p>
           </div>
         </div>
         <div class="table-wrap compact-table">
@@ -1467,9 +1512,9 @@ function renderWithinTests() {
         </div>
         <div class="pair-mean-grid single">
           ${renderPairMeanCards([{
-            title: comparison,
-            leftLabel: labelA,
-            rightLabel: labelB,
+            title: comparisonLabel,
+            leftLabel: levelRows[0]?.level,
+            rightLabel: levelRows[1]?.level,
             leftMean: levelRows[0]?.meanLoss,
             rightMean: levelRows[1]?.meanLoss,
             leftClass: "pair-one",
@@ -1504,7 +1549,7 @@ function renderWithinTests() {
             </thead>
             <tbody>
               <tr>
-                <th>${comparison}</th>
+                <th>${comparisonLabel}</th>
                 <td class="${sigClass(evidence.tP)}">${fmtSignedLoss(evidence.meanDiff)}</td>
                 <td>${fmtPct(evidence.winRateA)}</td>
                 <td class="${sigClass(evidence.tP)}">${fmtP(evidence.tP)}</td>

@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Pricing Benchmarks · All Data</title>
+  <link rel="stylesheet" href="styles.css?v=20260717i">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Benchmarking AI Pricing · All Data</p>
+      <h1>Relative Revenue Loss Comparisons</h1>
+    </div>
+    <div class="dataset-strip" aria-label="Dataset status">
+      <span><strong id="caseCount">0</strong> matched cases</span>
+      <span><strong id="completeCount">0</strong> complete cases</span>
+      <span><strong id="sourceCount">0</strong> model rows</span>
+    </div>
+  </header>
+
+  <main>
+    <nav class="tabs" aria-label="Analysis panels">
+      <button class="tab active" data-tab="tests">Tests (Across Models)</button>
+      <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
+    </nav>
+
+    <section id="across" class="panel">
+      <div class="toolbar card" aria-label="Filters">
+        <label>Group table by
+          <select id="groupPicker"></select>
+        </label>
+      </div>
+
+      <article class="comparison-note card" id="acrossNote"></article>
+
+      <article class="card table-card summary-card">
+        <div class="card-heading">
+          <h2>Three-model summary</h2>
+          <span>Answer availability · mean · median</span>
+        </div>
+        <div class="table-wrap">
+          <table id="summaryTable">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Answered</th>
+                <th>Answer rate</th>
+                <th>Mean loss</th>
+                <th>Median loss</th>
+                <th>P75 loss</th>
+                <th>P90 loss</th>
+                <th>Win share</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Distribution of relative revenue loss</h2>
+          <span>Single plot across all three models</span>
+        </div>
+        <div id="lossHistogram" class="histogram"></div>
+      </article>
+
+      <div class="kpi-grid" id="acrossKpis"></div>
+
+      <div class="grid two">
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Mean relative revenue loss</h2>
+            <span>Complete matched cases</span>
+          </div>
+          <div id="meanLossBars" class="bar-list"></div>
+        </article>
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Median relative revenue loss</h2>
+            <span>Complete matched cases</span>
+          </div>
+          <div id="medianLossBars" class="bar-list"></div>
+        </article>
+      </div>
+
+      <div class="grid two">
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Answer availability</h2>
+            <span>Matched inputs</span>
+          </div>
+          <div id="answerBars" class="bar-list"></div>
+        </article>
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Head-to-head wins</h2>
+            <span>Lowest loss wins</span>
+          </div>
+          <div id="winBars" class="bar-list"></div>
+        </article>
+      </div>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Grouped comparison: <span id="groupTitle">Demand model</span></h2>
+          <span>Mean loss by matched subgroup</span>
+        </div>
+        <div class="table-wrap">
+          <table id="groupTable">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="tests" class="panel active">
+      <div class="toolbar card test-selection-toolbar" aria-label="Case selection">
+        <label>Scenario subtype
+          <select data-test-filter="scenario_subtype"></select>
+        </label>
+        <label>Demand model
+          <select data-test-filter="demand_model"></select>
+        </label>
+        <label>Sigma
+          <select data-test-filter="sigma"></select>
+        </label>
+        <label>History length
+          <select data-test-filter="history_length"></select>
+        </label>
+        <label>Next environment
+          <select data-test-filter="next_env"></select>
+        </label>
+        <label>Marginal cost
+          <select data-test-filter="mc"></select>
+        </label>
+        <label>Competitor price
+          <select data-test-filter="p_c_current"></select>
+        </label>
+        <label>Role
+          <select data-test-filter="role"></select>
+        </label>
+        <label>Product context
+          <select data-test-filter="product_context"></select>
+        </label>
+        <label>Distribution hint
+          <select data-test-filter="dist_hint"></select>
+        </label>
+        <label>Hint applied
+          <select data-test-filter="dist_hint_applied"></select>
+        </label>
+        <label>Environment hint
+          <select data-test-filter="env_hint"></select>
+        </label>
+        <button id="resetTestFilters" class="secondary-button" type="button">Reset selection</button>
+      </div>
+
+      <article class="comparison-note card" id="testsNote"></article>
+
+      <div class="grid two">
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Mean loss by method</h2>
+            <span>Includes heuristic benchmark; winner highlighted</span>
+          </div>
+          <div class="table-wrap">
+            <table id="acrossMeanTable">
+              <thead>
+                <tr>
+                  <th>Method</th>
+                  <th>N</th>
+                  <th>Mean</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Mean comparisons</h2>
+            <span>Paired t-test on matched differences</span>
+          </div>
+          <div class="table-wrap">
+            <table id="acrossPairTestsTable">
+              <thead>
+                <tr>
+                  <th>Comparison</th>
+                  <th>N</th>
+                  <th>Mean diff</th>
+                  <th>T p-value</th>
+                  <th>Bootstrap 95% CI</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Mean-loss bars</h2>
+          <span>Bars use complete matched cases and include the heuristic benchmark</span>
+        </div>
+        <div id="acrossPairMeanBars" class="pair-mean-grid"></div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Mean loss by demand distribution</h2>
+          <span>One shared scale across all distributions; four methods per panel</span>
+        </div>
+        <div id="acrossDistributionMeanBars" class="distribution-mean-grid"></div>
+      </article>
+
+      <div class="grid two">
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Under / similar / over pricing</h2>
+            <span>Similar means within +/-5% of the optimal price</span>
+          </div>
+          <div id="acrossDirectionAll" class="direction-list"></div>
+        </article>
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Under / similar / over pricing</h2>
+            <span>Similar means within +/-5% of the optimal price</span>
+          </div>
+          <div id="acrossDirectionMatched" class="direction-list"></div>
+        </article>
+      </div>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Quartile comparison</h2>
+          <span>Q1 · median · Q3, winner highlighted by column</span>
+        </div>
+        <div class="table-wrap">
+          <table id="quantileTable">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Q1</th>
+                <th>Median</th>
+                <th>Q3</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Density of relative revenue loss</h2>
+          <span id="densityCutoffLabel">Kernel density over 0-15% relative revenue loss</span>
+        </div>
+        <div id="lossDensity" class="density-plot"></div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>CDF of relative revenue loss</h2>
+          <span>Higher curve means more cases at or below each loss level</span>
+        </div>
+        <div id="lossCdf" class="cdf-plot"></div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Density of paired differences</h2>
+          <span>Gemini comparisons only; displayed from -10% to +10%; negative favors Gemini</span>
+        </div>
+        <div id="diffDensity" class="density-plot"></div>
+      </article>
+
+      <div class="grid two">
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Paired difference diagnostics</h2>
+            <span>Difference quartiles and win share</span>
+          </div>
+          <div class="table-wrap">
+            <table id="pairedDiffTable">
+              <thead>
+                <tr>
+                  <th>Comparison</th>
+                  <th>N</th>
+                  <th>Mean diff</th>
+                  <th>Median diff</th>
+                  <th>P25 diff</th>
+                  <th>P75 diff</th>
+                  <th>T p-value</th>
+                  <th>Bootstrap mean 95% CI</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
+    </section>
+
+    <section id="withinTests" class="panel">
+      <div class="toolbar card" aria-label="Within-model test controls">
+        <label>LLMs
+          <select id="withinTestModels" multiple size="3"></select>
+        </label>
+        <label>Only varying column
+          <select id="withinTestField"></select>
+        </label>
+        <label>First case level
+          <select id="withinTestLevelA"></select>
+        </label>
+        <label>Second case level
+          <select id="withinTestLevelB"></select>
+        </label>
+      </div>
+
+      <article class="comparison-note card" id="withinTestsNote"></article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2 id="withinTestCombinedTitle">Expert role: matched mean loss</h2>
+          <span id="withinTestCombinedNote">No and Yes shown side by side for each LLM</span>
+        </div>
+        <div id="withinTestCombinedChart" class="pair-mean-grid"></div>
+      </article>
+
+      <div class="within-test-panel-grid" id="withinTestPanels"></div>
+    </section>
+
+    <section id="within" class="panel">
+      <div class="toolbar card" aria-label="Within-model controls">
+        <label>Group cases by
+          <select id="withinGroupPicker"></select>
+        </label>
+      </div>
+
+      <article class="comparison-note card" id="withinNote"></article>
+      <div class="model-panel-grid" id="withinModelPanels"></div>
+    </section>
+  </main>
+
+  <footer>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</footer>
+  <script src="app.js?v=20260810b"></script>
+</body>
+</html>

@@ -1759,10 +1759,45 @@ document.querySelector("#withinTestLevelB").addEventListener("change", event => 
   renderWithinTests();
 });
 
-fetch("data.json", { cache: "no-store" })
-  .then(response => response.json())
+async function loadPayload() {
+  const response = await fetch("data.json", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Could not load data.json (${response.status})`);
+  }
+
+  const data = await response.json();
+  if (Array.isArray(data)) {
+    return { rows: data, models: [...new Set(data.map(row => row.model))] };
+  }
+
+  if (Array.isArray(data.rows)) {
+    return data;
+  }
+
+  if (Array.isArray(data.parts) && data.parts.length) {
+    const partPayloads = await Promise.all(
+      data.parts.map(async part => {
+        const partResponse = await fetch(part, { cache: "no-store" });
+        if (!partResponse.ok) {
+          throw new Error(`Could not load ${part} (${partResponse.status})`);
+        }
+        return partResponse.json();
+      })
+    );
+    const chunkRows = partPayloads.flatMap(part => Array.isArray(part) ? part : (part.rows || []));
+    return {
+      ...data,
+      rows: chunkRows,
+      models: data.models || [...new Set(chunkRows.map(row => row.model))],
+    };
+  }
+
+  return data;
+}
+
+loadPayload()
   .then(data => {
-    payload = Array.isArray(data) ? { rows: data, models: [...new Set(data.map(row => row.model))] } : data;
+    payload = data;
     rows = payload.rows || [];
     models = payload.models || [...new Set(rows.map(row => row.model))];
     render();

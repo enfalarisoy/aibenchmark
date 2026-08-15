@@ -1,16 +1,23 @@
 let payload = { rows: [], models: [] };
 let rows = [];
 let models = [];
+let answeredRowsByModel = new Map();
+const withinFieldCache = new Map();
 
 let selectedTab = "tests";
 let selectedGroup = "demand_model";
 let selectedWithinGroup = "demand_model";
+let selectedAcrossDemandModels = [];
 let selectedDensityCutoff = "2";
 let selectedTestFilters = {};
 let selectedWithinTestModels = [];
 let selectedWithinTestField = "role";
+let selectedWithinTestMode = "selected";
 let selectedWithinTestLevelA = "";
 let selectedWithinTestLevelB = "";
+let selectedWithinTestIncludedLevels = [];
+let withinTestIncludedLevelsTouched = false;
+const DEFAULT_WITHIN_LEVEL_SELECTION_COUNT = 2;
 
 const MODEL_META = {
   "GPT-5 mini": { colorClass: "model-gpt", short: "GPT" },
@@ -78,7 +85,23 @@ const WITHIN_ALL_LEVEL_LABELS = {
   dist_hint_applied: "All applied hint modes",
   env_hint: "All environment hints",
 };
-const WITHIN_ALL_COMPARISONS_LABEL = "Each level once (vs rest)";
+const WITHIN_ALL_COMPARISONS_LABEL = "Show all levels together";
+const FILTER_PLURAL_LABELS = {
+  scenario_subtype: "scenarios",
+  demand_model: "demand models",
+  history_length: "history lengths",
+  sigma: "noise levels",
+  parameter_set: "parameter sets",
+  has_environment: "environment settings",
+  next_env: "next environments",
+  mc: "marginal costs",
+  p_c_current: "competitor prices",
+  role: "expert roles",
+  product_context: "product contexts",
+  dist_hint: "distribution hints",
+  dist_hint_applied: "applied hint modes",
+  env_hint: "environment hints",
+};
 
 const fmtInt = value => new Intl.NumberFormat("en-US").format(value || 0);
 const fmtNum = value => Number.isFinite(value) ? value.toFixed(3) : "-";
@@ -210,6 +233,15 @@ function displayLevel(value) {
   return text.replaceAll("_", " ");
 }
 
+function sortLevelValues(values) {
+  return [...values].sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    return displayLevel(a).localeCompare(displayLevel(b));
+  });
+}
+
 function withinAllLabel(field) {
   return WITHIN_ALL_LEVEL_LABELS[field] || `All ${GROUP_OPTIONS[field]}`;
 }
@@ -217,6 +249,17 @@ function withinAllLabel(field) {
 function withinLevelLabel(field, value) {
   if (value === WITHIN_ALL_COMPARISONS) return WITHIN_ALL_COMPARISONS_LABEL;
   return value === WITHIN_ALL_LEVEL ? withinAllLabel(field) : displayLevel(value);
+}
+
+function selectedWithinAllSelections(selectedModels, field) {
+  const availableSelections = concreteWithinAllSelections(selectedModels, field);
+  const availableLevels = availableSelections.map(item => item.b);
+  selectedWithinTestIncludedLevels = selectedWithinTestIncludedLevels.filter(level => availableLevels.includes(level));
+  if (!withinTestIncludedLevelsTouched && !selectedWithinTestIncludedLevels.length) {
+    selectedWithinTestIncludedLevels = availableLevels.slice(0, DEFAULT_WITHIN_LEVEL_SELECTION_COUNT);
+  }
+  const selectedLevels = new Set(selectedWithinTestIncludedLevels);
+  return availableSelections.filter(item => selectedLevels.has(item.b));
 }
 
 function modelMeta(model) {
@@ -230,6 +273,82 @@ function kpi(label, value, note) {
       <div class="kpi-value">${value}</div>
       <div class="kpi-note">${note}</div>
     </article>`;
+}
+
+function verticalAxisTitleSvg(margin, plotHeight, label, options = {}) {
+  const padding = options.padding ?? 58;
+  const x = Math.max(8, margin.left - padding);
+  const y = margin.top + plotHeight / 2;
+  return `<text x="${x}" y="${y}" text-anchor="middle" class="axis-title" transform="rotate(-90 ${x} ${y})">${label}</text>`;
+}
+
+function truncateAxisLabel(label, maxLength = 14) {
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label;
+}
+
+function renderLevelMeanBarChart(items, options = {}) {
+  if (!items.length) return `<p class="quiet">No level means available.</p>`;
+  const finiteMeans = items.map(item => item.value).filter(Number.isFinite);
+  if (!finiteMeans.length) return `<p class="quiet">No numeric level means available.</p>`;
+
+  const axis = percentAxisConfig(finiteMeans, {
+    minimum: Math.min(0.01, Math.max(0.002, Math.max(...finiteMeans) * 0.9)),
+  });
+  const { yMax, yTicks } = axis;
+  const maxLabelLength = Math.max(...items.map(item => item.label.length), 0);
+  const useTiltedLabels = items.length >= 4 || maxLabelLength > 12;
+  const width = Math.max(390, items.length * 185 + 90);
+  const height = useTiltedLabels ? 342 : 310;
+  const margin = {
+    top: 38,
+    right: 18,
+    bottom: useTiltedLabels ? (options.xAxisTitle ? 116 : 100) : (options.xAxisTitle ? 74 : 58),
+    left: 130,
+  };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const slotWidth = plotWidth / items.length;
+  const barWidth = Math.min(26, slotWidth * 0.22);
+  const y = value => margin.top + plotHeight - (value / yMax) * plotHeight;
+  const centers = items.map((_, index) => margin.left + slotWidth * (index + 0.5));
+
+  const axisLines = yTicks.map(tick => {
+    const ty = y(tick);
+    return `
+      <g>
+        <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${ty.toFixed(2)}" y2="${ty.toFixed(2)}" class="grid-line"></line>
+        <text x="${margin.left - 10}" y="${(ty + 4).toFixed(2)}" text-anchor="end">${fmtLoss(tick)}</text>
+      </g>`;
+  }).join("");
+
+  const barsHtml = items.map((item, index) => {
+    const x = centers[index] - barWidth / 2;
+    const barY = y(item.value);
+    const label = truncateAxisLabel(item.label, 16);
+    const labelY = options.xAxisTitle ? height - (useTiltedLabels ? 48 : 30) : (useTiltedLabels ? height - 34 : height - 16);
+    const labelHtml = useTiltedLabels
+      ? `<text x="${centers[index].toFixed(2)}" y="${labelY}" text-anchor="end" class="axis-title" transform="rotate(-32 ${centers[index].toFixed(2)} ${labelY})">${label}</text>`
+      : `<text x="${centers[index].toFixed(2)}" y="${labelY}" text-anchor="middle" class="axis-title">${label}</text>`;
+    return `
+      <g>
+        <title>${item.label}: ${fmtLoss(item.value)}</title>
+        <rect class="${item.className || ""}" x="${x.toFixed(2)}" y="${barY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - barY).toFixed(2)}"></rect>
+        <text x="${centers[index].toFixed(2)}" y="${Math.max(margin.top + 12, barY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtLoss(item.value)}</text>
+        ${labelHtml}
+      </g>`;
+  }).join("");
+
+  return `
+    <div class="level-mean-chart-wrap">
+      <svg class="level-mean-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Mean relative revenue loss by level">
+        <g class="hist-axis">${axisLines}</g>
+        <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
+        <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
+        <g>${barsHtml}</g>
+        ${verticalAxisTitleSvg(margin, plotHeight, "Mean relative revenue loss", { padding: 76 })}
+        ${options.xAxisTitle ? `<text x="${(margin.left + plotWidth / 2).toFixed(2)}" y="${height - 8}" text-anchor="middle" class="axis-title">${options.xAxisTitle}</text>` : ""}
+      </svg>
+    </div>`;
 }
 
 function bars(items, formatter, scaleMax = null) {
@@ -275,8 +394,15 @@ function renderDirectionBars(items) {
   ));
   const yMax = Math.max(...shares, 0.001) * 1.18;
   const width = Math.max(390, summaries.length * 185 + 90);
-  const height = 310;
-  const margin = { top: 38, right: 18, bottom: 52, left: 130 };
+  const maxLabelLength = Math.max(...summaries.map(item => item.label.length), 0);
+  const useExpandedBottomSpacing = summaries.length >= 2 && maxLabelLength > 8;
+  const height = useExpandedBottomSpacing ? 330 : 310;
+  const margin = {
+    top: 38,
+    right: 18,
+    bottom: useExpandedBottomSpacing ? 72 : 52,
+    left: 130,
+  };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const groupWidth = plotWidth / summaries.length;
@@ -296,6 +422,9 @@ function renderDirectionBars(items) {
     const center = margin.left + groupWidth * (index + 0.5);
     const totalWidth = 3 * barWidth + 2 * gap;
     const startX = center - totalWidth / 2;
+    const groupLabel = truncateAxisLabel(item.label, 18);
+    const groupLabelY = useExpandedBottomSpacing ? height - 10 : height - 5;
+    const groupLabelHtml = `<text x="${center.toFixed(2)}" y="${groupLabelY}" text-anchor="middle" class="axis-title">${groupLabel}</text>`;
     const specs = [
       { key: "under", label: "Under", className: "direction-under" },
       { key: "similar", label: "Similar", className: "direction-similar" },
@@ -307,13 +436,13 @@ function renderDirectionBars(items) {
       const barY = y(share);
       return `
         <rect class="${spec.className}" x="${x.toFixed(2)}" y="${barY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - barY).toFixed(2)}"></rect>
-        <text x="${(x + barWidth / 2).toFixed(2)}" y="${height - 28}" text-anchor="middle">${spec.label}</text>
+        <text x="${(x + barWidth / 2).toFixed(2)}" y="${useExpandedBottomSpacing ? height - 36 : height - 28}" text-anchor="middle">${spec.label}</text>
         <text x="${(x + barWidth / 2).toFixed(2)}" y="${(barY - 5).toFixed(2)}" text-anchor="middle" class="direction-value-label">${fmtPct(share)}</text>`;
     }).join("");
     return `
       <g>
         ${barsHtml}
-        <text x="${center.toFixed(2)}" y="${height - 5}" text-anchor="middle" class="axis-title">${item.label}</text>
+        ${groupLabelHtml}
       </g>`;
   }).join("");
   const legend = [
@@ -336,28 +465,35 @@ function renderDirectionBars(items) {
       <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g>${groups}</g>
-      <text x="28" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 28 ${margin.top + plotHeight / 2})">Share of answered prices</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Share of answered prices", { padding: 70 })}
     </svg>`;
 }
 
 function renderPairMeanCards(items, options = {}) {
   if (!items.length) return `<p class="quiet">No pairwise means available.</p>`;
-  const fixedAxis = options.fixedAxis === true;
   const showPValues = options.showPValues !== false;
   const showValues = options.showValues === true;
+  const withinStyle = options.withinStyle === true;
   const finite = items.flatMap(item => [item.leftMean, item.rightMean]).filter(Number.isFinite);
   const maxValue = Math.max(...finite, 0.000001);
-  const yMax = fixedAxis ? 0.06 : maxValue * 1.22;
-  const width = Math.max(360, items.length * 185 + 90);
-  const height = 300;
-  const margin = { top: 34, right: 18, bottom: 58, left: fixedAxis ? 112 : 64 };
+  const axis = options.yMax
+    ? { yMax: options.yMax, yTicks: options.yTicks || [0, options.yMax / 2, options.yMax] }
+    : percentAxisConfig(finite, { minimum: Math.min(0.01, Math.max(0.002, maxValue * 0.9)) });
+  const { yMax, yTicks } = axis;
+  const bottomLabels = items.flatMap(item => [item.leftLabel, item.rightLabel, item.title]);
+  const maxBottomLabelLength = Math.max(...bottomLabels.map(label => (label || "").length), 0);
+  const useTiltedBottomLabels = withinStyle && maxBottomLabelLength > 8;
+  const width = Math.max(withinStyle ? 390 : 360, items.length * 185 + 90);
+  const height = withinStyle ? (useTiltedBottomLabels ? 344 : 310) : 300;
+  const margin = withinStyle
+    ? { top: 38, right: 18, bottom: useTiltedBottomLabels ? 104 : 58, left: 130 }
+    : { top: 34, right: 18, bottom: 58, left: 64 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const groupWidth = plotWidth / items.length;
-  const barWidth = Math.min(30, groupWidth * 0.18);
+  const barWidth = withinStyle ? Math.min(24, groupWidth * 0.14) : Math.min(30, groupWidth * 0.18);
   const y = value => margin.top + plotHeight - (value / yMax) * plotHeight;
-  const yTicks = fixedAxis ? [0, 0.03, 0.06] : [0, yMax / 2, yMax];
-  const axis = yTicks.map(tick => {
+  const axisLines = yTicks.map(tick => {
     const ty = y(tick);
     return `
       <g>
@@ -373,26 +509,41 @@ function renderPairMeanCards(items, options = {}) {
     const leftY = y(item.leftMean);
     const rightY = y(item.rightMean);
     const pY = Math.min(leftY, rightY) - 10;
+    const leftLabelY = withinStyle ? (useTiltedBottomLabels ? height - 50 : height - 28) : height - 34;
+    const rightLabelY = leftLabelY;
+    const leftAxisLabel = truncateAxisLabel(item.leftLabel, 18);
+    const rightAxisLabel = truncateAxisLabel(item.rightLabel, 18);
+    const titleLabel = truncateAxisLabel(item.title, 20);
+    const leftLabelHtml = useTiltedBottomLabels
+      ? `<text x="${(leftX + barWidth / 2).toFixed(2)}" y="${leftLabelY}" text-anchor="end" class="chart-x-label" transform="rotate(-30 ${(leftX + barWidth / 2).toFixed(2)} ${leftLabelY})">${leftAxisLabel}</text>`
+      : `<text x="${(leftX + barWidth / 2).toFixed(2)}" y="${leftLabelY}" text-anchor="middle">${leftAxisLabel}</text>`;
+    const rightLabelHtml = useTiltedBottomLabels
+      ? `<text x="${(rightX + barWidth / 2).toFixed(2)}" y="${rightLabelY}" text-anchor="end" class="chart-x-label" transform="rotate(-30 ${(rightX + barWidth / 2).toFixed(2)} ${rightLabelY})">${rightAxisLabel}</text>`
+      : `<text x="${(rightX + barWidth / 2).toFixed(2)}" y="${rightLabelY}" text-anchor="middle">${rightAxisLabel}</text>`;
+    const showBottomTitle = !(withinStyle && items.length === 1);
+    const titleY = withinStyle
+      ? (useTiltedBottomLabels ? height - 10 : height - 5)
+      : height - 14;
     return `
       <g>
         <rect class="${item.leftClass}" x="${leftX.toFixed(2)}" y="${leftY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - leftY).toFixed(2)}"></rect>
         <rect class="${item.rightClass}" x="${rightX.toFixed(2)}" y="${rightY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - rightY).toFixed(2)}"></rect>
         ${showValues ? `<text x="${(leftX + barWidth / 2).toFixed(2)}" y="${Math.max(margin.top + 12, leftY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtLoss(item.leftMean)}</text>
         <text x="${(rightX + barWidth / 2).toFixed(2)}" y="${Math.max(margin.top + 12, rightY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtLoss(item.rightMean)}</text>` : ""}
-        <text x="${(leftX + barWidth / 2).toFixed(2)}" y="${height - 34}" text-anchor="middle">${item.leftLabel}</text>
-        <text x="${(rightX + barWidth / 2).toFixed(2)}" y="${height - 34}" text-anchor="middle">${item.rightLabel}</text>
-        <text x="${center.toFixed(2)}" y="${height - 14}" text-anchor="middle" class="axis-title">${item.title}</text>
+        ${leftLabelHtml}
+        ${rightLabelHtml}
+        ${showBottomTitle ? `<text x="${center.toFixed(2)}" y="${titleY}" text-anchor="middle" class="axis-title">${titleLabel}</text>` : ""}
         ${showPValues ? `<text x="${center.toFixed(2)}" y="${Math.max(margin.top + 10, pY).toFixed(2)}" text-anchor="middle" class="${sigClass(item.pValue)}">p=${fmtP(item.pValue)}</text>` : ""}
       </g>`;
   }).join("");
 
   return `
     <svg class="pair-mean-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Pairwise mean relative revenue loss bars">
-      <g class="hist-axis">${axis}</g>
+      <g class="hist-axis">${axisLines}</g>
       <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g class="pair-mean-bars">${groups}</g>
-      <text x="${fixedAxis ? 28 : 16}" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 ${fixedAxis ? 28 : 16} ${margin.top + plotHeight / 2})">Mean relative revenue loss</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Mean relative revenue loss", { padding: withinStyle ? 70 : 58 })}
     </svg>`;
 }
 
@@ -401,7 +552,10 @@ function renderAcrossMeanChart(modelItems, options = {}) {
   const finiteMeans = modelItems.map(item => item.meanLoss).filter(Number.isFinite);
   if (!finiteMeans.length) return `<p class="quiet">No numeric mean losses available.</p>`;
 
-  const yMax = options.yMax || 0.06;
+  const axis = options.yMax
+    ? { yMax: options.yMax, yTicks: options.yTicks || [0, options.yMax / 2, options.yMax] }
+    : percentAxisConfig(finiteMeans, { minimum: Math.min(0.01, Math.max(0.002, Math.max(...finiteMeans) * 0.9)) });
+  const { yMax, yTicks } = axis;
   const compact = options.compact === true;
   const width = compact ? 285 : 600;
   const height = compact ? 270 : 330;
@@ -414,8 +568,7 @@ function renderAcrossMeanChart(modelItems, options = {}) {
   const barWidth = Math.min(54, slotWidth * 0.34);
   const y = value => margin.top + plotHeight - (value / yMax) * plotHeight;
   const centers = modelItems.map((_, index) => margin.left + slotWidth * (index + 0.5));
-  const yTicks = [0, yMax / 2, yMax];
-  const axis = yTicks.map(tick => {
+  const axisLines = yTicks.map(tick => {
     const ty = y(tick);
     return `
       <g>
@@ -437,19 +590,37 @@ function renderAcrossMeanChart(modelItems, options = {}) {
 
   return `
     <svg class="pair-mean-chart across-mean-chart ${compact ? "compact-across-mean-chart" : ""}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Across-method mean relative revenue loss bars">
-      <g class="hist-axis">${axis}</g>
+      <g class="hist-axis">${axisLines}</g>
       <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g class="pair-mean-bars">${barsHtml}</g>
-      <text x="16" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 16 ${margin.top + plotHeight / 2})">Mean relative revenue loss</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Mean relative revenue loss")}
     </svg>`;
 }
 
-function sharedPercentAxisMax(values, minimum = 0.10) {
-  const finite = values.filter(Number.isFinite);
-  if (!finite.length) return minimum;
-  const paddedMax = Math.max(minimum, Math.max(...finite) * 1.08);
-  return Math.ceil(paddedMax / 0.05) * 0.05;
+function niceAxisStep(target) {
+  if (!Number.isFinite(target) || target <= 0) return 0.001;
+  const exponent = Math.floor(Math.log10(target));
+  const base = 10 ** exponent;
+  const multipliers = [1, 2, 2.5, 5, 10];
+  for (const multiplier of multipliers) {
+    const step = base * multiplier;
+    if (step >= target) return step;
+  }
+  return base * 10;
+}
+
+function percentAxisConfig(values, options = {}) {
+  const finite = values.filter(Number.isFinite).filter(value => value >= 0);
+  const minimum = options.minimum ?? 0.002;
+  const tickSteps = options.tickSteps ?? 3;
+  const padding = options.padding ?? 1.15;
+  const maxValue = finite.length ? Math.max(...finite) : 0;
+  const paddedMax = Math.max(minimum, maxValue * padding);
+  const step = niceAxisStep(paddedMax / tickSteps);
+  const yMax = step * tickSteps;
+  const yTicks = Array.from({ length: tickSteps + 1 }, (_, index) => index * step);
+  return { yMax, yTicks };
 }
 
 function renderAcrossDistributionMeanPanels(caseRows) {
@@ -466,24 +637,16 @@ function renderAcrossDistributionMeanPanels(caseRows) {
       n: cases.length,
       meanLoss: mean(benchmarkLosses(cases, model)),
     }));
-    const yMax = level === "empirical_rf"
-      ? sharedPercentAxisMax(items.map(item => item.meanLoss), 0.10)
-      : 0.10;
     return `<section class="distribution-mean-panel">
       <h3>${displayLevel(level)}</h3>
-      ${renderAcrossMeanChart(items, { yMax, compact: true })}
+      ${renderAcrossMeanChart(items, { compact: true })}
     </section>`;
   }).join("");
 }
 
 function uniqueSorted(field, sourceRows = rows) {
   const values = [...new Set(sourceRows.map(row => levelValue(row[field])))];
-  return values.sort((a, b) => {
-    const na = Number(a);
-    const nb = Number(b);
-    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
-    return displayLevel(a).localeCompare(displayLevel(b));
-  });
+  return sortLevelValues(values);
 }
 
 function setSelectOptions(selector, values, selected, label = "All") {
@@ -496,12 +659,109 @@ function setSelectOptions(selector, values, selected, label = "All") {
   return select.value;
 }
 
+function availableAcrossDemandModels() {
+  return uniqueSorted("demand_model");
+}
+
+function syncAcrossDemandModelSelection() {
+  const available = availableAcrossDemandModels();
+  if (!available.length) {
+    selectedAcrossDemandModels = [];
+    return available;
+  }
+
+  const validSelected = selectedAcrossDemandModels.filter(value => available.includes(value));
+  selectedAcrossDemandModels = validSelected.length ? validSelected : [...available];
+  return available;
+}
+
+function populateAcrossDemandModelControls() {
+  const available = syncAcrossDemandModelSelection();
+  const host = document.querySelector("#acrossDemandModelList");
+  const summary = document.querySelector("#acrossDemandModelSummary");
+
+  if (!available.length) {
+    host.innerHTML = `<p class="quiet">No demand models were found in the loaded data.</p>`;
+    summary.textContent = "No demand models available";
+    return;
+  }
+
+  host.innerHTML = available.map(value => `
+    <label class="checkbox-chip">
+      <input type="checkbox" value="${value}" ${selectedAcrossDemandModels.includes(value) ? "checked" : ""}>
+      <span>${displayLevel(value)}</span>
+    </label>
+  `).join("");
+
+  summary.textContent = selectedAcrossDemandModels.length === available.length
+    ? `All ${fmtInt(available.length)} demand models selected`
+    : `${fmtInt(selectedAcrossDemandModels.length)} of ${fmtInt(available.length)} demand models selected`;
+}
+
+function availableTestFilterValues(field) {
+  return uniqueSorted(field);
+}
+
+function selectedTestFilterValues(field, available = availableTestFilterValues(field)) {
+  const current = selectedTestFilters[field];
+  if (!available.length) return [];
+  if (!Array.isArray(current)) {
+    selectedTestFilters[field] = [...available];
+    return selectedTestFilters[field];
+  }
+  const validSelected = current.filter(value => available.includes(value));
+  if (validSelected.length !== current.length) selectedTestFilters[field] = validSelected;
+  return selectedTestFilters[field];
+}
+
+function allFieldLabel(field) {
+  return WITHIN_ALL_LEVEL_LABELS[field] || `All ${GROUP_OPTIONS[field]}`;
+}
+
+function formatTestFilterSummary(field, available, selected) {
+  if (!available.length || !selected.length) return `No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()}`;
+  if (selected.length === available.length) return allFieldLabel(field);
+  if (selected.length === 1) return displayLevel(selected[0]);
+  if (selected.length === 2) return selected.map(displayLevel).join(", ");
+  return `${fmtInt(selected.length)} ${FILTER_PLURAL_LABELS[field] || "items"} selected`;
+}
+
+function populateTestFilterControl(field) {
+  const available = availableTestFilterValues(field);
+  const selected = selectedTestFilterValues(field, available);
+  const host = document.querySelector(`[data-test-filter-list="${field}"]`);
+  const summary = document.querySelector(`[data-test-filter-summary="${field}"]`);
+  const menuSummary = document.querySelector(`[data-test-filter-menu-summary="${field}"]`);
+
+  if (!host || !summary || !menuSummary) return;
+
+  if (!available.length) {
+    host.innerHTML = `<p class="quiet">No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} were found in the loaded data.</p>`;
+    summary.textContent = `No ${GROUP_OPTIONS[field].toLowerCase()}`;
+    menuSummary.textContent = `No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} available`;
+    return;
+  }
+
+  host.innerHTML = available.map(value => `
+    <label class="checkbox-chip">
+      <input type="checkbox" value="${value}" ${selected.includes(value) ? "checked" : ""}>
+      <span>${displayLevel(value)}</span>
+    </label>
+  `).join("");
+
+  summary.textContent = formatTestFilterSummary(field, available, selected);
+  menuSummary.textContent = selected.length === available.length
+    ? `${allFieldLabel(field)} selected`
+    : `${fmtInt(selected.length)} of ${fmtInt(available.length)} ${FILTER_PLURAL_LABELS[field] || "items"} selected`;
+}
+
 function populateControls() {
   const groupPicker = document.querySelector("#groupPicker");
   groupPicker.innerHTML = Object.entries(GROUP_OPTIONS)
     .map(([value, label]) => `<option value="${value}">${label}</option>`)
     .join("");
   groupPicker.value = selectedGroup;
+  populateAcrossDemandModelControls();
 }
 
 function populateWithinControls() {
@@ -513,13 +773,8 @@ function populateWithinControls() {
 }
 
 function populateTestFilterControls() {
-  document.querySelectorAll("[data-test-filter]").forEach(select => {
-    const field = select.dataset.testFilter;
-    const current = selectedTestFilters[field] || "all";
-    const label = `All ${GROUP_OPTIONS[field].toLowerCase()}s`;
-    const selected = setSelectOptions(`[data-test-filter="${field}"]`, uniqueSorted(field), current, label);
-    if (selected === "all") delete selectedTestFilters[field];
-    else selectedTestFilters[field] = selected;
+  TEST_FILTER_FIELDS.forEach(field => {
+    populateTestFilterControl(field);
   });
 }
 
@@ -536,7 +791,7 @@ function populateWithinTestControls() {
 
   const fieldPicker = document.querySelector("#withinTestField");
   const validFields = Object.keys(GROUP_OPTIONS).filter(field =>
-    validWithinComparisons(selectedWithinTestModels, field).length
+    concreteWithinAllSelections(selectedWithinTestModels, field).length >= 2
   );
   if (!validFields.includes(selectedWithinTestField)) selectedWithinTestField = validFields[0] || "";
   fieldPicker.innerHTML = validFields
@@ -544,62 +799,54 @@ function populateWithinTestControls() {
     .join("") || `<option value="">No paired fields</option>`;
   fieldPicker.value = selectedWithinTestField;
 
-  const validPairs = validWithinComparisons(selectedWithinTestModels, selectedWithinTestField);
-  const hasAllOption = validPairs.some(pair => pair.a === WITHIN_ALL_LEVEL);
-  const selectionIsValid = selectedWithinTestLevelA === WITHIN_ALL_LEVEL
-    ? hasAllOption
-    : validPairs.some(pair => pair.a === selectedWithinTestLevelA && pair.b === selectedWithinTestLevelB);
-  if (!selectionIsValid) {
-    const preferredPair = selectedWithinTestField === "dist_hint_applied"
-      ? validPairs.find(pair => pair.a === "none" && pair.b === "family")
-      : null;
-    const defaultPair = validPairs.find(pair => pair.a !== WITHIN_ALL_LEVEL) || validPairs[0];
-    selectedWithinTestLevelA = preferredPair?.a || defaultPair?.a || "";
-    selectedWithinTestLevelB = preferredPair?.b || defaultPair?.b || "";
-  } else if (selectedWithinTestLevelA === WITHIN_ALL_LEVEL) {
-    selectedWithinTestLevelB = WITHIN_ALL_COMPARISONS;
+  const allSelections = concreteWithinAllSelections(selectedWithinTestModels, selectedWithinTestField);
+  const includedLevelsWrap = document.querySelector("#withinTestIncludedLevelsWrap");
+  const includedLevelsHost = document.querySelector("#withinTestIncludedLevels");
+  const includedLevelsSummary = document.querySelector("#withinTestIncludedLevelsSummary");
+  const includedLevelsAll = document.querySelector("#withinTestIncludedLevelsAll");
+  selectedWithinAllSelections(selectedWithinTestModels, selectedWithinTestField);
+  includedLevelsWrap.hidden = false;
+  includedLevelsHost.innerHTML = allSelections.length
+    ? allSelections.map(item => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${item.b}" ${selectedWithinTestIncludedLevels.includes(item.b) ? "checked" : ""}>
+          <span>${withinLevelLabel(selectedWithinTestField, item.b)} <em>(${fmtInt(item.count)} matched)</em></span>
+        </label>`
+      ).join("")
+    : `<p class="quiet">No matched levels are available for this selection.</p>`;
+  if (includedLevelsAll) {
+    const totalCount = allSelections.length;
+    const selectedCount = selectedWithinTestIncludedLevels.length;
+    includedLevelsAll.checked = totalCount > 0 && selectedCount === totalCount;
+    includedLevelsAll.indeterminate = selectedCount > 0 && selectedCount < totalCount;
+    includedLevelsAll.disabled = totalCount === 0;
   }
-
-  const levelA = document.querySelector("#withinTestLevelA");
-  const levelB = document.querySelector("#withinTestLevelB");
-  const levelAOptions = [...new Set(validPairs.map(pair => pair.a))]
-    .sort((left, right) => {
-      if (left === WITHIN_ALL_LEVEL) return -1;
-      if (right === WITHIN_ALL_LEVEL) return 1;
-      return withinLevelLabel(selectedWithinTestField, left).localeCompare(withinLevelLabel(selectedWithinTestField, right));
-    });
-  const levelBOptions = selectedWithinTestLevelA === WITHIN_ALL_LEVEL
-    ? [WITHIN_ALL_COMPARISONS]
-    : validPairs
-      .filter(pair => pair.a === selectedWithinTestLevelA)
-      .map(pair => pair.b);
-  levelA.innerHTML = levelAOptions
-    .map(level => `<option value="${level}">${withinLevelLabel(selectedWithinTestField, level)}</option>`)
-    .join("");
-  levelB.innerHTML = levelBOptions
-    .map(level => `<option value="${level}">${withinLevelLabel(selectedWithinTestField, level)}</option>`)
-    .join("");
-  levelA.value = selectedWithinTestLevelA;
-  if (!levelBOptions.includes(selectedWithinTestLevelB)) selectedWithinTestLevelB = levelBOptions[0] || "";
-  levelB.value = selectedWithinTestLevelB;
-  levelB.disabled = selectedWithinTestLevelA === WITHIN_ALL_LEVEL;
+  includedLevelsSummary.textContent = selectedWithinTestIncludedLevels.length >= 2
+    ? `${fmtInt(selectedWithinTestIncludedLevels.length)} of ${fmtInt(allSelections.length)} levels selected`
+    : "Click 2 or more levels below";
 }
 
 function passesFilters(row) {
-  return true;
+  if (!selectedAcrossDemandModels.length) return false;
+  return selectedAcrossDemandModels.includes(levelValue(row.demand_model));
 }
 
 function passesTestFilters(row) {
   return TEST_FILTER_FIELDS.every(field => {
     const selected = selectedTestFilters[field];
-    return !selected || selected === "all" || levelValue(row[field]) === selected;
+    if (!Array.isArray(selected)) return true;
+    if (!selected.length) return false;
+    return selected.includes(levelValue(row[field]));
   });
 }
 
 function activeTestFilterLabels() {
-  return TEST_FILTER_FIELDS
-    .filter(field => selectedTestFilters[field] && selectedTestFilters[field] !== "all")
-    .map(field => `${GROUP_OPTIONS[field]}: ${displayLevel(selectedTestFilters[field])}`);
+  return TEST_FILTER_FIELDS.flatMap(field => {
+    const available = availableTestFilterValues(field);
+    const selected = selectedTestFilterValues(field, available);
+    if (selected.length === available.length) return [];
+    return [`${GROUP_OPTIONS[field]}: ${formatTestFilterSummary(field, available, selected)}`];
+  });
 }
 
 function benchmarkInputColumns() {
@@ -614,37 +861,92 @@ function withinMatchKey(row, varyingField) {
     .join("|");
 }
 
+function rebuildDerivedIndexes() {
+  answeredRowsByModel = new Map(
+    models.map(model => [model, rows.filter(row => row.model === model && row.answered)])
+  );
+  withinFieldCache.clear();
+}
+
+function getWithinFieldModelCache(model, field) {
+  if (!model || !field) {
+    return { orderedLevels: [], levelSet: new Set(), groups: [], pairsByKey: new Map() };
+  }
+
+  let fieldCache = withinFieldCache.get(field);
+  if (!fieldCache) {
+    fieldCache = new Map();
+    withinFieldCache.set(field, fieldCache);
+  }
+
+  if (fieldCache.has(model)) {
+    return fieldCache.get(model);
+  }
+
+  const sourceRows = answeredRowsByModel.get(model) || [];
+  const levels = new Set();
+  const groupsByKey = new Map();
+
+  sourceRows.forEach(row => {
+    const level = levelValue(row[field]);
+    levels.add(level);
+    const key = withinMatchKey(row, field);
+    const group = groupsByKey.get(key) || new Map();
+    group.set(level, row);
+    groupsByKey.set(key, group);
+  });
+
+  const orderedLevels = sortLevelValues(levels);
+  const groups = [...groupsByKey.values()];
+  const pairsByKey = new Map();
+
+  groups.forEach(group => {
+    const presentLevels = orderedLevels.filter(level => group.has(level));
+    for (let i = 0; i < presentLevels.length; i += 1) {
+      for (let j = i + 1; j < presentLevels.length; j += 1) {
+        const left = presentLevels[i];
+        const right = presentLevels[j];
+        const pairKey = `${left}|||${right}`;
+        const pairs = pairsByKey.get(pairKey) || [];
+        pairs.push({ a: group.get(left), b: group.get(right) });
+        pairsByKey.set(pairKey, pairs);
+      }
+    }
+  });
+
+  const cache = {
+    orderedLevels,
+    levelSet: new Set(orderedLevels),
+    groups,
+    pairsByKey,
+  };
+  fieldCache.set(model, cache);
+  return cache;
+}
+
 function withinMatchedPairsFor(model, field, levelA, levelB) {
   if (!model || !field || !levelA || !levelB) {
     return [];
   }
+  const cache = getWithinFieldModelCache(model, field);
   if (levelA === WITHIN_ALL_LEVEL) {
-    const groups = new Map();
-    rows.forEach(row => {
-      if (row.model !== model || !row.answered) return;
-      const level = levelValue(row[field]);
-      const key = withinMatchKey(row, field);
-      const group = groups.get(key) || { aRows: [] };
-      if (level === levelB) group.b = row;
-      else group.aRows.push(row);
-      groups.set(key, group);
+    return cache.groups.flatMap(group => {
+      const bRow = group.get(levelB);
+      if (!bRow) return [];
+      return [...group.entries()]
+        .filter(([level]) => level !== levelB)
+        .map(([, aRow]) => ({ a: aRow, b: bRow }));
     });
-    return [...groups.values()]
-      .filter(group => group.b && group.aRows.length)
-      .flatMap(group => group.aRows.map(aRow => ({ a: aRow, b: group.b })));
   }
-  const groups = new Map();
-  rows.forEach(row => {
-    if (row.model !== model || !row.answered) return;
-    const level = levelValue(row[field]);
-    if (level !== levelA && level !== levelB) return;
-    const key = withinMatchKey(row, field);
-    const group = groups.get(key) || {};
-    if (level === levelA) group.a = row;
-    if (level === levelB) group.b = row;
-    groups.set(key, group);
-  });
-  return [...groups.values()].filter(group => group.a && group.b);
+  const forwardKey = `${levelA}|||${levelB}`;
+  if (cache.pairsByKey.has(forwardKey)) {
+    return cache.pairsByKey.get(forwardKey);
+  }
+  const reverseKey = `${levelB}|||${levelA}`;
+  if (!cache.pairsByKey.has(reverseKey)) {
+    return [];
+  }
+  return cache.pairsByKey.get(reverseKey).map(pair => ({ a: pair.b, b: pair.a }));
 }
 
 function withinMatchedPairs(model) {
@@ -656,36 +958,56 @@ function withinMatchedPairs(model) {
   );
 }
 
+function sharedWithinLevels(selectedModels, field) {
+  if (!selectedModels.length || !field) return [];
+  const commonLevels = new Set(getWithinFieldModelCache(selectedModels[0], field).orderedLevels);
+  selectedModels.slice(1).forEach(model => {
+    const modelLevels = getWithinFieldModelCache(model, field).levelSet;
+    [...commonLevels].forEach(level => {
+      if (!modelLevels.has(level)) commonLevels.delete(level);
+    });
+  });
+  return sortLevelValues(commonLevels);
+}
+
+function withinAllLevelRowsFor(model, field, levels) {
+  const cache = getWithinFieldModelCache(model, field);
+  const orderedLevels = levels?.length
+    ? [...levels]
+    : cache.orderedLevels;
+  const allowedLevels = new Set(orderedLevels);
+  const rowsByLevel = new Map(orderedLevels.map(level => [level, []]));
+
+  let matchedKeys = 0;
+  cache.groups.forEach(group => {
+    const presentLevels = orderedLevels.filter(level => allowedLevels.has(level) && group.has(level));
+    if (presentLevels.length < 2) return;
+    matchedKeys += 1;
+    presentLevels.forEach(level => {
+      rowsByLevel.get(level).push(group.get(level));
+    });
+  });
+
+  return { matchedKeys, rowsByLevel };
+}
+
 function concreteWithinAllSelections(selectedModels, field) {
   if (!selectedModels.length || !field) return [];
-  const levels = [...new Set(
-    selectedModels.flatMap(model => uniqueSorted(field, rows.filter(row => row.model === model)))
-  )].sort((a, b) => {
-    const na = Number(a);
-    const nb = Number(b);
-    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
-    return withinLevelLabel(field, a).localeCompare(withinLevelLabel(field, b));
-  });
+  const levels = sharedWithinLevels(selectedModels, field);
+  const perModelRows = selectedModels.map(model => withinAllLevelRowsFor(model, field, levels));
   return levels.map(level => {
-    const minCount = Math.min(...selectedModels.map(model =>
-      withinMatchedPairsFor(model, field, WITHIN_ALL_LEVEL, level).length
+    const minCount = Math.min(...perModelRows.map(({ rowsByLevel }) =>
+      rowsByLevel.get(level)?.length || 0
     ));
     return { a: WITHIN_ALL_LEVEL, b: level, count: minCount };
-  }).filter(item => item.count).sort((left, right) =>
-    right.count - left.count || withinLevelLabel(field, left.b).localeCompare(withinLevelLabel(field, right.b))
-  );
+  }).filter(item => item.count);
 }
 
 function concreteWithinComparisons(selectedModels, field) {
   if (!selectedModels.length || !field) return [];
-  const levels = [...new Set(
-    selectedModels.flatMap(model => uniqueSorted(field, rows.filter(row => row.model === model)))
-  )].sort((a, b) => {
-    const na = Number(a);
-    const nb = Number(b);
-    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
-    return withinLevelLabel(field, a).localeCompare(withinLevelLabel(field, b));
-  });
+  const levels = sortLevelValues(
+    new Set(selectedModels.flatMap(model => getWithinFieldModelCache(model, field).orderedLevels))
+  );
   const comparisons = [];
   for (let i = 0; i < levels.length; i += 1) {
     for (let j = i + 1; j < levels.length; j += 1) {
@@ -707,7 +1029,7 @@ function concreteWithinComparisons(selectedModels, field) {
 function validWithinComparisons(selectedModels, field) {
   if (!selectedModels.length || !field) return [];
   const perModel = selectedModels.map(model => {
-    const levels = uniqueSorted(field, rows.filter(row => row.model === model));
+    const levels = getWithinFieldModelCache(model, field).orderedLevels;
     const pairs = [];
     for (let i = 0; i < levels.length; i += 1) {
       for (let j = 0; j < levels.length; j += 1) {
@@ -862,7 +1184,7 @@ function renderHistogram(completed) {
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g class="hist-bars">${rects}</g>
       <text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" class="axis-title">Relative revenue loss</text>
-      <text x="16" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 16 ${margin.top + plotHeight / 2})">Share of cases</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Share of cases")}
     </svg>`;
 }
 
@@ -1004,7 +1326,7 @@ function renderDensityPlot(completed) {
       <g>${paths}</g>
       ${quartileInset}
       <text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" class="axis-title">Relative revenue loss</text>
-      <text x="16" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 16 ${margin.top + plotHeight / 2})">Probability density</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Probability density")}
     </svg>`;
 }
 
@@ -1077,7 +1399,7 @@ function renderCdfPlot(completed) {
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g>${paths}</g>
       <text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" class="axis-title">Relative revenue loss</text>
-      <text x="16" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 16 ${margin.top + plotHeight / 2})">Share at or below loss</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Share at or below loss")}
     </svg>`;
 }
 
@@ -1164,7 +1486,7 @@ function renderDifferenceDensityPlot(completed) {
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g>${paths}</g>
       <text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" class="axis-title">Paired difference in relative revenue loss</text>
-      <text x="16" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 16 ${margin.top + plotHeight / 2})">Density</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Density")}
     </svg>`;
 }
 
@@ -1236,7 +1558,7 @@ function renderWithinDifferenceDensityPlot(diffs, label) {
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <path class="density-line pair-one" d="${path}"></path>
       <text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" class="axis-title">Paired difference in relative revenue loss</text>
-      <text x="16" y="${margin.top + plotHeight / 2}" text-anchor="middle" class="axis-title" transform="rotate(-90 16 ${margin.top + plotHeight / 2})">Density</text>
+      ${verticalAxisTitleSvg(margin, plotHeight, "Density")}
     </svg>`;
 }
 
@@ -1436,13 +1758,150 @@ function renderTests() {
 
 function renderWithinTests() {
   populateWithinTestControls();
-  const allMode = selectedWithinTestLevelA === WITHIN_ALL_LEVEL;
-  const labelA = withinLevelLabel(selectedWithinTestField, selectedWithinTestLevelA);
-  const labelB = withinLevelLabel(selectedWithinTestField, selectedWithinTestLevelB);
-  const comparison = `${labelA} - ${labelB}`;
-  const comparisons = allMode
-    ? concreteWithinAllSelections(selectedWithinTestModels, selectedWithinTestField)
-    : [{ a: selectedWithinTestLevelA, b: selectedWithinTestLevelB }];
+  const selectedAllLevels = selectedWithinAllSelections(selectedWithinTestModels, selectedWithinTestField);
+  const allLevels = selectedAllLevels.map(item => item.b);
+  if (allLevels.length < 2) {
+    document.querySelector("#caseCount").textContent = "0";
+    document.querySelector("#completeCount").textContent = "0";
+    document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
+    document.querySelector("#withinTestsNote").innerHTML =
+      `<strong>Select at least 2 levels</strong><span>Click two or more <strong>${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()}</strong> values in the included-levels list to build exact within-model matches.</span>`;
+    document.querySelector("#withinTestCombinedTitle").textContent = `${GROUP_OPTIONS[selectedWithinTestField]}: one bar per level`;
+    document.querySelector("#withinTestCombinedNote").textContent = "Click two or more levels to compare them together";
+    document.querySelector("#withinTestCombinedChart").innerHTML = `<p class="quiet">No comparison is shown until at least two levels are selected.</p>`;
+    document.querySelector("#withinTestPanels").innerHTML = "";
+    return;
+  }
+
+  if (allLevels.length > 2) {
+    const panelData = selectedWithinTestModels.map(model => {
+      const { matchedKeys, rowsByLevel } = withinAllLevelRowsFor(model, selectedWithinTestField, allLevels);
+      const levelRows = allLevels.map(level => {
+        const levelSourceRows = rowsByLevel.get(level) || [];
+        const losses = levelSourceRows.map(row => row.rel_rev_loss).filter(Number.isFinite);
+        return {
+          level,
+          rows: levelSourceRows,
+          n: losses.length,
+          meanLoss: mean(losses),
+          q25: quantile(losses, 0.25),
+          q50: quantile(losses, 0.5),
+          q75: quantile(losses, 0.75),
+        };
+      }).filter(item => item.n);
+      return { model, matchedKeys, levelRows };
+    }).filter(item => item.levelRows.length);
+    const totalMatchedKeys = panelData.reduce((sum, item) => sum + item.matchedKeys, 0);
+
+    document.querySelector("#caseCount").textContent = fmtInt(totalMatchedKeys);
+    document.querySelector("#completeCount").textContent = fmtInt(totalMatchedKeys);
+    document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
+    document.querySelector("#withinTestsNote").innerHTML =
+      `<strong>${fmtInt(totalMatchedKeys)} matched within-model cases</strong><span>Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> across ${fmtInt(allLevels.length)} selected levels. Each bar shows one concrete level exactly once for each selected LLM. A case contributes when the same benchmark input appears for that LLM with at least one other selected level of ${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()}; no pairwise expansion is shown.</span>`;
+
+    document.querySelector("#withinTestCombinedTitle").textContent = `${GROUP_OPTIONS[selectedWithinTestField]}: one bar per level`;
+    document.querySelector("#withinTestCombinedNote").textContent =
+      `${fmtInt(allLevels.length)} selected levels shown once for each selected LLM${selectedWithinTestField === "env_hint" ? "; seasonal cases only" : ""}`;
+    document.querySelector("#withinTestCombinedChart").innerHTML = panelData.length
+      ? `<div class="within-all-model-grid">${panelData.map(({ model, levelRows }) => `
+          <section class="within-all-summary-card">
+            <h3>${model}</h3>
+            ${renderLevelMeanBarChart(levelRows.map(item => ({
+                label: withinLevelLabel(selectedWithinTestField, item.level),
+                value: item.meanLoss,
+                className: modelMeta(model).colorClass,
+              })), {
+                compact: true,
+                xAxisTitle: GROUP_OPTIONS[selectedWithinTestField],
+              })}
+          </section>`).join("")}</div>`
+      : `<p class="quiet">No matched multi-level cases available.</p>`;
+
+    document.querySelector("#withinTestPanels").innerHTML = panelData.map(({ model, matchedKeys, levelRows }) => {
+      const bestMean = [...levelRows].filter(item => Number.isFinite(item.meanLoss)).sort((a, b) => a.meanLoss - b.meanLoss)[0]?.level;
+      const bestQ25 = [...levelRows].filter(item => Number.isFinite(item.q25)).sort((a, b) => a.q25 - b.q25)[0]?.level;
+      const bestQ50 = [...levelRows].filter(item => Number.isFinite(item.q50)).sort((a, b) => a.q50 - b.q50)[0]?.level;
+      const bestQ75 = [...levelRows].filter(item => Number.isFinite(item.q75)).sort((a, b) => a.q75 - b.q75)[0]?.level;
+      const meta = modelMeta(model);
+      return `
+        <article class="card within-test-card">
+          <div class="model-card-top">
+            <span class="model-dot ${meta.colorClass}"></span>
+            <div>
+              <h2>${model}</h2>
+              <p>${fmtInt(matchedKeys)} matched cases across ${fmtInt(levelRows.length)} levels</p>
+            </div>
+          </div>
+          <div class="table-wrap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Level</th>
+                  <th>N</th>
+                  <th>Mean</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${levelRows.map(item => `
+                  <tr>
+                    <th>${withinLevelLabel(selectedWithinTestField, item.level)}</th>
+                    <td>${fmtInt(item.n)}</td>
+                    <td class="${item.level === bestMean ? "winner-cell" : ""}">${fmtLoss(item.meanLoss)}</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+          </div>
+          <div class="card-heading compact-heading">
+            <h2>Mean-loss bars</h2>
+            <span>One bar per level</span>
+          </div>
+          ${renderLevelMeanBarChart(levelRows.map(item => ({
+              label: withinLevelLabel(selectedWithinTestField, item.level),
+              value: item.meanLoss,
+              className: meta.colorClass,
+            })), {
+              xAxisTitle: GROUP_OPTIONS[selectedWithinTestField],
+            })}
+          <div class="card-heading compact-heading">
+            <h2>Under / equal / over pricing</h2>
+            <span>Matched cases only</span>
+          </div>
+          <div class="direction-list compact-direction">
+            ${renderDirectionBars(levelRows.map(item => ({
+              label: withinLevelLabel(selectedWithinTestField, item.level),
+              rows: item.rows,
+            })))}
+          </div>
+          <div class="table-wrap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Level</th>
+                  <th>Q1</th>
+                  <th>Median</th>
+                  <th>Q3</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${levelRows.map(item => `
+                  <tr>
+                    <th>${withinLevelLabel(selectedWithinTestField, item.level)}</th>
+                    <td class="${item.level === bestQ25 ? "winner-cell" : ""}">${fmtLoss(item.q25)}</td>
+                    <td class="${item.level === bestQ50 ? "winner-cell" : ""}">${fmtLoss(item.q50)}</td>
+                    <td class="${item.level === bestQ75 ? "winner-cell" : ""}">${fmtLoss(item.q75)}</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+          </div>
+        </article>`;
+    }).join("");
+    return;
+  }
+
+  const [selectedLevelA, selectedLevelB] = allLevels;
+  const labelA = withinLevelLabel(selectedWithinTestField, selectedLevelA);
+  const labelB = withinLevelLabel(selectedWithinTestField, selectedLevelB);
+  const comparisons = [{ a: selectedLevelA, b: selectedLevelB }];
   const panelData = comparisons.flatMap((comparisonItem, comparisonIndex) =>
     selectedWithinTestModels.map((model, modelIndex) => {
       const pairs = withinMatchedPairsFor(model, selectedWithinTestField, comparisonItem.a, comparisonItem.b);
@@ -1462,35 +1921,34 @@ function renderWithinTests() {
   document.querySelector("#caseCount").textContent = fmtInt(totalPairs);
   document.querySelector("#completeCount").textContent = fmtInt(totalPairs);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
-  const pooledNote = allMode
-    ? `${labelA} shows each concrete ${GROUP_OPTIONS[selectedWithinTestField].toLowerCase()} level once, with that level compared against the pool of the remaining matched levels.`
-    : "The controls only show level pairs that have exact matches for the selected LLMs.";
   document.querySelector("#withinTestsNote").innerHTML =
-    `<strong>${fmtInt(totalPairs)} matched within-model pairs</strong><span>${allMode ? `Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> across all available levels.` : `Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> levels ${labelA} and ${labelB}.`} ${pooledNote} Each pair is identical on every benchmark input column except ${GROUP_OPTIONS[selectedWithinTestField]}; <code>variant</code> is ignored because it labels the condition.</span>`;
+    `<strong>${fmtInt(totalPairs)} matched within-model pairs</strong><span>Comparing <strong>${GROUP_OPTIONS[selectedWithinTestField]}</strong> levels ${labelA} and ${labelB}. The controls only show level pairs that have exact matches for the selected LLMs. Each pair is identical on every benchmark input column except ${GROUP_OPTIONS[selectedWithinTestField]}; <code>variant</code> is ignored because it labels the condition.</span>`;
 
-  const combinedItems = panelData.map(({ model, pairs, evidence, comparison: comparisonItem, comparisonLabel }) => ({
-    title: allMode ? `${modelMeta(model).short} · ${comparisonLabel}` : modelMeta(model).short,
-    leftLabel: withinLevelLabel(selectedWithinTestField, comparisonItem.a),
-    rightLabel: withinLevelLabel(selectedWithinTestField, comparisonItem.b),
-    leftMean: mean(pairs.map(pair => pair.a.rel_rev_loss).filter(Number.isFinite)),
-    rightMean: mean(pairs.map(pair => pair.b.rel_rev_loss).filter(Number.isFinite)),
-    leftClass: "pair-one",
-    rightClass: "pair-two",
-    pValue: evidence.tP,
-  }));
-  document.querySelector("#withinTestCombinedTitle").textContent = allMode
-    ? `${GROUP_OPTIONS[selectedWithinTestField]}: each level once against the rest`
-    : `${GROUP_OPTIONS[selectedWithinTestField]}: matched mean loss`;
-  document.querySelector("#withinTestCombinedNote").textContent = allMode
-    ? `${fmtInt(comparisons.length)} concrete levels shown once across the selected LLMs${selectedWithinTestField === "env_hint" ? "; seasonal cases only" : ""}`
-    : selectedWithinTestField === "env_hint"
-      ? `${labelA} and ${labelB} shown side by side for each LLM; seasonal cases only`
-      : `${labelA} and ${labelB} shown side by side for each LLM`;
-  document.querySelector("#withinTestCombinedChart").innerHTML = renderPairMeanCards(combinedItems, {
-    fixedAxis: ["role", "product_context", "history_length", "sigma", "env_hint", "dist_hint_applied"].includes(selectedWithinTestField),
-    showPValues: false,
-    showValues: true,
-  });
+  document.querySelector("#withinTestCombinedTitle").textContent = `${GROUP_OPTIONS[selectedWithinTestField]}: matched mean loss`;
+  document.querySelector("#withinTestCombinedNote").textContent = selectedWithinTestField === "env_hint"
+    ? `${labelA} and ${labelB} shown side by side for each LLM; seasonal cases only`
+    : `${labelA} and ${labelB} shown side by side for each LLM`;
+  document.querySelector("#withinTestCombinedChart").innerHTML = panelData.length
+    ? `<div class="within-all-model-grid">${panelData.map(({ model, pairs, comparison: comparisonItem }) => `
+        <section class="within-all-summary-card">
+          <h3>${model}</h3>
+          ${renderLevelMeanBarChart([
+            {
+              label: withinLevelLabel(selectedWithinTestField, comparisonItem.a),
+              value: mean(pairs.map(pair => pair.a.rel_rev_loss).filter(Number.isFinite)),
+              className: "pair-one",
+            },
+            {
+              label: withinLevelLabel(selectedWithinTestField, comparisonItem.b),
+              value: mean(pairs.map(pair => pair.b.rel_rev_loss).filter(Number.isFinite)),
+              className: "pair-two",
+            },
+          ], {
+            compact: true,
+            xAxisTitle: GROUP_OPTIONS[selectedWithinTestField],
+          })}
+        </section>`).join("")}</div>`
+    : `<p class="quiet">No matched two-level cases available.</p>`;
 
   document.querySelector("#withinTestPanels").innerHTML = panelData.map(({ model, pairs, evidence, comparisonLabel, comparison: comparisonItem }) => {
     const levelRows = [
@@ -1545,22 +2003,20 @@ function renderWithinTests() {
           <h2>Mean-loss bars</h2>
           <span>p = ${fmtP(evidence.tP)}</span>
         </div>
-        <div class="pair-mean-grid single">
-          ${renderPairMeanCards([{
-            title: comparisonLabel,
-            leftLabel: levelRows[0]?.level,
-            rightLabel: levelRows[1]?.level,
-            leftMean: levelRows[0]?.meanLoss,
-            rightMean: levelRows[1]?.meanLoss,
-            leftClass: "pair-one",
-            rightClass: "pair-two",
-            pValue: evidence.tP,
-          }], {
-            fixedAxis: ["role", "product_context", "history_length", "sigma", "env_hint", "dist_hint_applied"].includes(selectedWithinTestField),
-            showPValues: false,
-            showValues: true,
-          })}
-        </div>
+        ${renderLevelMeanBarChart([
+          {
+            label: levelRows[0]?.level,
+            value: levelRows[0]?.meanLoss,
+            className: "pair-one",
+          },
+          {
+            label: levelRows[1]?.level,
+            value: levelRows[1]?.meanLoss,
+            className: "pair-two",
+          },
+        ], {
+          xAxisTitle: GROUP_OPTIONS[selectedWithinTestField],
+        })}
         <div class="card-heading compact-heading">
           <h2>Under / equal / over pricing</h2>
           <span>Matched pairs only</span>
@@ -1620,6 +2076,7 @@ function renderWithinTests() {
 
 function renderAcross() {
   populateControls();
+  const availableDemandModels = availableAcrossDemandModels();
   const cases = comparableCases();
   const completed = completeCases(cases);
   const summaries = modelSummary(cases);
@@ -1636,8 +2093,15 @@ function renderAcross() {
   document.querySelector("#caseCount").textContent = fmtInt(cases.length);
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
+  const selectedDemandModelLabels = selectedAcrossDemandModels.map(displayLevel);
+  let demandModelNote = "Select one or more demand models to run the across-model comparison.";
+  if (selectedAcrossDemandModels.length && selectedAcrossDemandModels.length === availableDemandModels.length) {
+    demandModelNote = "Using all demand models.";
+  } else if (selectedAcrossDemandModels.length) {
+    demandModelNote = `Filtered to <strong>${fmtInt(selectedAcrossDemandModels.length)}</strong> demand models: <strong>${selectedDemandModelLabels.join(", ")}</strong>.`;
+  }
   document.querySelector("#acrossNote").innerHTML =
-    `<strong>${fmtInt(cases.length)} matched inputs</strong><span>Each row is matched by the normalized benchmark-input key. Mean loss and wins use only the ${fmtInt(completed.length)} cases where every model has a numeric answer and relative revenue loss.</span>`;
+    `<strong>${fmtInt(cases.length)} matched inputs</strong><span>${demandModelNote} Each row is matched by the normalized benchmark-input key. Mean loss and wins use only the ${fmtInt(completed.length)} cases where every model has a numeric answer and relative revenue loss.</span>`;
 
   document.querySelector("#acrossKpis").innerHTML = [
     kpi("Matched cases", fmtInt(cases.length), "Same input rows across all models"),
@@ -1848,16 +2312,43 @@ document.querySelector("#groupPicker").addEventListener("change", event => {
   renderAcross();
 });
 
+document.querySelector("#acrossDemandModelList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedAcrossDemandModels = [...document.querySelectorAll("#acrossDemandModelList input:checked")]
+    .map(input => input.value);
+  renderAcross();
+});
+
+document.querySelector("#acrossDemandModelReset").addEventListener("click", () => {
+  selectedAcrossDemandModels = availableAcrossDemandModels();
+  renderAcross();
+});
+
 document.querySelector("#withinGroupPicker").addEventListener("change", event => {
   selectedWithinGroup = event.target.value;
   renderWithin();
 });
 
-document.querySelectorAll("[data-test-filter]").forEach(select => {
-  select.addEventListener("change", event => {
-    const field = event.target.dataset.testFilter;
-    if (event.target.value === "all") delete selectedTestFilters[field];
-    else selectedTestFilters[field] = event.target.value;
+document.addEventListener("click", event => {
+  const resetButton = event.target.closest("[data-test-filter-reset]");
+  if (resetButton) {
+    const field = resetButton.dataset.testFilterReset;
+    delete selectedTestFilters[field];
+    renderTests();
+    return;
+  }
+
+  const openDropdowns = document.querySelectorAll(".multi-select[open]");
+  openDropdowns.forEach(dropdown => {
+    if (!dropdown.contains(event.target)) dropdown.open = false;
+  });
+});
+
+document.querySelectorAll("[data-test-filter-list]").forEach(host => {
+  host.addEventListener("change", event => {
+    if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+    const field = host.dataset.testFilterList;
+    selectedTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
     renderTests();
   });
 });
@@ -1869,27 +2360,31 @@ document.querySelector("#resetTestFilters").addEventListener("click", () => {
 
 document.querySelector("#withinTestModels").addEventListener("change", event => {
   selectedWithinTestModels = [...event.target.selectedOptions].map(option => option.value);
-  selectedWithinTestLevelA = "";
-  selectedWithinTestLevelB = "";
+  selectedWithinTestIncludedLevels = [];
+  withinTestIncludedLevelsTouched = false;
   renderWithinTests();
 });
 
 document.querySelector("#withinTestField").addEventListener("change", event => {
   selectedWithinTestField = event.target.value;
-  selectedWithinTestLevelA = "";
-  selectedWithinTestLevelB = "";
+  selectedWithinTestIncludedLevels = [];
+  withinTestIncludedLevelsTouched = false;
   renderWithinTests();
 });
 
-document.querySelector("#withinTestLevelA").addEventListener("change", event => {
-  selectedWithinTestLevelA = event.target.value;
-  if (selectedWithinTestLevelB === selectedWithinTestLevelA) selectedWithinTestLevelB = "";
+document.querySelector("#withinTestIncludedLevels").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  withinTestIncludedLevelsTouched = true;
+  selectedWithinTestIncludedLevels = [...document.querySelectorAll("#withinTestIncludedLevels input:checked")]
+    .map(input => input.value);
   renderWithinTests();
 });
 
-document.querySelector("#withinTestLevelB").addEventListener("change", event => {
-  selectedWithinTestLevelB = event.target.value;
-  if (selectedWithinTestLevelA === selectedWithinTestLevelB) selectedWithinTestLevelA = "";
+document.querySelector("#withinTestIncludedLevelsAll").addEventListener("change", event => {
+  const allLevels = concreteWithinAllSelections(selectedWithinTestModels, selectedWithinTestField)
+    .map(item => item.b);
+  withinTestIncludedLevelsTouched = true;
+  selectedWithinTestIncludedLevels = event.target.checked ? allLevels : [];
   renderWithinTests();
 });
 
@@ -1934,13 +2429,14 @@ loadPayload()
     payload = data;
     rows = payload.rows || [];
     models = payload.models || [...new Set(rows.map(row => row.model))];
+    rebuildDerivedIndexes();
     render();
   })
   .catch(error => {
     const isFileProtocol = window.location.protocol === "file:";
     const launchHint = isFileProtocol
       ? `<p>This page was opened directly from Finder, so the browser blocked access to <code>data.json</code>.</p>
-         <p>Open the included <code>Open AI Pricing App.command</code> file in this folder, and keep that Terminal window open while you use the app.</p>`
+         <p>Open the included <code>Open AI Pricing App All Data.command</code> file in this folder, and keep that Terminal window open while you use the app.</p>`
       : `<p>Could not load app data: ${error.message}</p>`;
     document.querySelector("main").innerHTML = `
       <article class="card error">

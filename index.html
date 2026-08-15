@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=20260717i">
+  <link rel="stylesheet" href="styles.css?v=20260815t">
 </head>
 <body>
   <header class="topbar">
@@ -30,6 +30,14 @@
         <label>Group table by
           <select id="groupPicker"></select>
         </label>
+        <fieldset class="checkbox-filter across-demand-filter">
+          <legend>Included demand models</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="acrossDemandModelSummary">Loading demand models…</span>
+            <button id="acrossDemandModelReset" class="mini-button" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list" id="acrossDemandModelList"></div>
+        </fieldset>
       </div>
 
       <article class="comparison-note card" id="acrossNote"></article>
@@ -118,42 +126,162 @@
 
     <section id="tests" class="panel active">
       <div class="toolbar card test-selection-toolbar" aria-label="Case selection">
-        <label>Scenario subtype
-          <select data-test-filter="scenario_subtype"></select>
-        </label>
-        <label>Demand model
-          <select data-test-filter="demand_model"></select>
-        </label>
-        <label>Sigma
-          <select data-test-filter="sigma"></select>
-        </label>
-        <label>History length
-          <select data-test-filter="history_length"></select>
-        </label>
-        <label>Next environment
-          <select data-test-filter="next_env"></select>
-        </label>
-        <label>Marginal cost
-          <select data-test-filter="mc"></select>
-        </label>
-        <label>Competitor price
-          <select data-test-filter="p_c_current"></select>
-        </label>
-        <label>Role
-          <select data-test-filter="role"></select>
-        </label>
-        <label>Product context
-          <select data-test-filter="product_context"></select>
-        </label>
-        <label>Distribution hint
-          <select data-test-filter="dist_hint"></select>
-        </label>
-        <label>Hint applied
-          <select data-test-filter="dist_hint_applied"></select>
-        </label>
-        <label>Environment hint
-          <select data-test-filter="env_hint"></select>
-        </label>
+        <div class="multi-select-filter" data-test-filter-wrap="scenario_subtype">
+          <span class="multi-select-label">Scenario subtype</span>
+          <details class="multi-select" data-test-filter-dropdown="scenario_subtype">
+            <summary class="multi-select-trigger" data-test-filter-summary="scenario_subtype">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="scenario_subtype">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="scenario_subtype" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="scenario_subtype"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="demand_model">
+          <span class="multi-select-label">Demand model</span>
+          <details class="multi-select" data-test-filter-dropdown="demand_model">
+            <summary class="multi-select-trigger" data-test-filter-summary="demand_model">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="demand_model">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="demand_model" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="demand_model"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="sigma">
+          <span class="multi-select-label">Sigma</span>
+          <details class="multi-select" data-test-filter-dropdown="sigma">
+            <summary class="multi-select-trigger" data-test-filter-summary="sigma">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="sigma">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="sigma" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="sigma"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="history_length">
+          <span class="multi-select-label">History length</span>
+          <details class="multi-select" data-test-filter-dropdown="history_length">
+            <summary class="multi-select-trigger" data-test-filter-summary="history_length">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="history_length">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="history_length" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="history_length"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="next_env">
+          <span class="multi-select-label">Next environment</span>
+          <details class="multi-select" data-test-filter-dropdown="next_env">
+            <summary class="multi-select-trigger" data-test-filter-summary="next_env">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="next_env">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="next_env" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="next_env"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="mc">
+          <span class="multi-select-label">Marginal cost</span>
+          <details class="multi-select" data-test-filter-dropdown="mc">
+            <summary class="multi-select-trigger" data-test-filter-summary="mc">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="mc">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="mc" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="mc"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="p_c_current">
+          <span class="multi-select-label">Competitor price</span>
+          <details class="multi-select" data-test-filter-dropdown="p_c_current">
+            <summary class="multi-select-trigger" data-test-filter-summary="p_c_current">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="p_c_current">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="p_c_current" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="p_c_current"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="role">
+          <span class="multi-select-label">Role</span>
+          <details class="multi-select" data-test-filter-dropdown="role">
+            <summary class="multi-select-trigger" data-test-filter-summary="role">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="role">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="role" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="role"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="product_context">
+          <span class="multi-select-label">Product context</span>
+          <details class="multi-select" data-test-filter-dropdown="product_context">
+            <summary class="multi-select-trigger" data-test-filter-summary="product_context">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="product_context">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="product_context" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="product_context"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="dist_hint">
+          <span class="multi-select-label">Distribution hint</span>
+          <details class="multi-select" data-test-filter-dropdown="dist_hint">
+            <summary class="multi-select-trigger" data-test-filter-summary="dist_hint">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="dist_hint">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="dist_hint" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="dist_hint"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="dist_hint_applied">
+          <span class="multi-select-label">Hint applied</span>
+          <details class="multi-select" data-test-filter-dropdown="dist_hint_applied">
+            <summary class="multi-select-trigger" data-test-filter-summary="dist_hint_applied">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="dist_hint_applied">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="dist_hint_applied" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="dist_hint_applied"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="env_hint">
+          <span class="multi-select-label">Environment hint</span>
+          <details class="multi-select" data-test-filter-dropdown="env_hint">
+            <summary class="multi-select-trigger" data-test-filter-summary="env_hint">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="env_hint">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="env_hint" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="env_hint"></div>
+            </div>
+          </details>
+        </div>
         <button id="resetTestFilters" class="secondary-button" type="button">Reset selection</button>
       </div>
 
@@ -313,12 +441,17 @@
         <label>Only varying column
           <select id="withinTestField"></select>
         </label>
-        <label>First case level
-          <select id="withinTestLevelA"></select>
-        </label>
-        <label>Second case level
-          <select id="withinTestLevelB"></select>
-        </label>
+        <fieldset class="checkbox-filter within-level-filter" id="withinTestIncludedLevelsWrap">
+          <legend>Included levels</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="withinTestIncludedLevelsSummary">Select 2 or more levels</span>
+            <label class="checkbox-chip checkbox-chip-control" for="withinTestIncludedLevelsAll">
+              <input id="withinTestIncludedLevelsAll" type="checkbox">
+              <span>Select all</span>
+            </label>
+          </div>
+          <div class="checkbox-list" id="withinTestIncludedLevels"></div>
+        </fieldset>
       </div>
 
       <article class="comparison-note card" id="withinTestsNote"></article>
@@ -347,6 +480,6 @@
   </main>
 
   <footer>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</footer>
-  <script src="app.js?v=20260810b"></script>
+  <script src="app.js?v=20260815t"></script>
 </body>
 </html>

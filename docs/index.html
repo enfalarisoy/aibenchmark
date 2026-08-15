@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Pricing Benchmarks · All Data</title>
+  <link rel="stylesheet" href="styles.css?v=20260815t">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Benchmarking AI Pricing · All Data</p>
+      <h1>Relative Revenue Loss Comparisons</h1>
+    </div>
+    <div class="dataset-strip" aria-label="Dataset status">
+      <span><strong id="caseCount">0</strong> matched cases</span>
+      <span><strong id="completeCount">0</strong> complete cases</span>
+      <span><strong id="sourceCount">0</strong> model rows</span>
+    </div>
+  </header>
+
+  <main>
+    <nav class="tabs" aria-label="Analysis panels">
+      <button class="tab active" data-tab="tests">Tests (Across Models)</button>
+      <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
+    </nav>
+
+    <section id="across" class="panel">
+      <div class="toolbar card" aria-label="Filters">
+        <label>Group table by
+          <select id="groupPicker"></select>
+        </label>
+        <fieldset class="checkbox-filter across-demand-filter">
+          <legend>Included demand models</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="acrossDemandModelSummary">Loading demand models…</span>
+            <button id="acrossDemandModelReset" class="mini-button" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list" id="acrossDemandModelList"></div>
+        </fieldset>
+      </div>
+
+      <article class="comparison-note card" id="acrossNote"></article>
+
+      <article class="card table-card summary-card">
+        <div class="card-heading">
+          <h2>Three-model summary</h2>
+          <span>Answer availability · mean · median</span>
+        </div>
+        <div class="table-wrap">
+          <table id="summaryTable">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Answered</th>
+                <th>Answer rate</th>
+                <th>Mean loss</th>
+                <th>Median loss</th>
+                <th>P75 loss</th>
+                <th>P90 loss</th>
+                <th>Win share</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Distribution of relative revenue loss</h2>
+          <span>Single plot across all three models</span>
+        </div>
+        <div id="lossHistogram" class="histogram"></div>
+      </article>
+
+      <div class="kpi-grid" id="acrossKpis"></div>
+
+      <div class="grid two">
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Mean relative revenue loss</h2>
+            <span>Complete matched cases</span>
+          </div>
+          <div id="meanLossBars" class="bar-list"></div>
+        </article>
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Median relative revenue loss</h2>
+            <span>Complete matched cases</span>
+          </div>
+          <div id="medianLossBars" class="bar-list"></div>
+        </article>
+      </div>
+
+      <div class="grid two">
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Answer availability</h2>
+            <span>Matched inputs</span>
+          </div>
+          <div id="answerBars" class="bar-list"></div>
+        </article>
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Head-to-head wins</h2>
+            <span>Lowest loss wins</span>
+          </div>
+          <div id="winBars" class="bar-list"></div>
+        </article>
+      </div>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Grouped comparison: <span id="groupTitle">Demand model</span></h2>
+          <span>Mean loss by matched subgroup</span>
+        </div>
+        <div class="table-wrap">
+          <table id="groupTable">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="tests" class="panel active">
+      <div class="toolbar card test-selection-toolbar" aria-label="Case selection">
+        <div class="multi-select-filter" data-test-filter-wrap="scenario_subtype">
+          <span class="multi-select-label">Scenario subtype</span>
+          <details class="multi-select" data-test-filter-dropdown="scenario_subtype">
+            <summary class="multi-select-trigger" data-test-filter-summary="scenario_subtype">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="scenario_subtype">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="scenario_subtype" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="scenario_subtype"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="demand_model">
+          <span class="multi-select-label">Demand model</span>
+          <details class="multi-select" data-test-filter-dropdown="demand_model">
+            <summary class="multi-select-trigger" data-test-filter-summary="demand_model">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="demand_model">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="demand_model" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="demand_model"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="sigma">
+          <span class="multi-select-label">Sigma</span>
+          <details class="multi-select" data-test-filter-dropdown="sigma">
+            <summary class="multi-select-trigger" data-test-filter-summary="sigma">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="sigma">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="sigma" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="sigma"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="history_length">
+          <span class="multi-select-label">History length</span>
+          <details class="multi-select" data-test-filter-dropdown="history_length">
+            <summary class="multi-select-trigger" data-test-filter-summary="history_length">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="history_length">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="history_length" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="history_length"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="next_env">
+          <span class="multi-select-label">Next environment</span>
+          <details class="multi-select" data-test-filter-dropdown="next_env">
+            <summary class="multi-select-trigger" data-test-filter-summary="next_env">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="next_env">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="next_env" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="next_env"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="mc">
+          <span class="multi-select-label">Marginal cost</span>
+          <details class="multi-select" data-test-filter-dropdown="mc">
+            <summary class="multi-select-trigger" data-test-filter-summary="mc">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="mc">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="mc" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="mc"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="p_c_current">
+          <span class="multi-select-label">Competitor price</span>
+          <details class="multi-select" data-test-filter-dropdown="p_c_current">
+            <summary class="multi-select-trigger" data-test-filter-summary="p_c_current">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="p_c_current">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="p_c_current" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="p_c_current"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="role">
+          <span class="multi-select-label">Role</span>
+          <details class="multi-select" data-test-filter-dropdown="role">
+            <summary class="multi-select-trigger" data-test-filter-summary="role">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="role">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="role" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="role"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="product_context">
+          <span class="multi-select-label">Product context</span>
+          <details class="multi-select" data-test-filter-dropdown="product_context">
+            <summary class="multi-select-trigger" data-test-filter-summary="product_context">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="product_context">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="product_context" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="product_context"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="dist_hint">
+          <span class="multi-select-label">Distribution hint</span>
+          <details class="multi-select" data-test-filter-dropdown="dist_hint">
+            <summary class="multi-select-trigger" data-test-filter-summary="dist_hint">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="dist_hint">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="dist_hint" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="dist_hint"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="dist_hint_applied">
+          <span class="multi-select-label">Hint applied</span>
+          <details class="multi-select" data-test-filter-dropdown="dist_hint_applied">
+            <summary class="multi-select-trigger" data-test-filter-summary="dist_hint_applied">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="dist_hint_applied">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="dist_hint_applied" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="dist_hint_applied"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="env_hint">
+          <span class="multi-select-label">Environment hint</span>
+          <details class="multi-select" data-test-filter-dropdown="env_hint">
+            <summary class="multi-select-trigger" data-test-filter-summary="env_hint">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="env_hint">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="env_hint" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="env_hint"></div>
+            </div>
+          </details>
+        </div>
+        <button id="resetTestFilters" class="secondary-button" type="button">Reset selection</button>
+      </div>
+
+      <article class="comparison-note card" id="testsNote"></article>
+
+      <div class="grid two">
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Mean loss by method</h2>
+            <span>Includes heuristic benchmark; winner highlighted</span>
+          </div>
+          <div class="table-wrap">
+            <table id="acrossMeanTable">
+              <thead>
+                <tr>
+                  <th>Method</th>
+                  <th>N</th>
+                  <th>Mean</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Mean comparisons</h2>
+            <span>Paired t-test on matched differences</span>
+          </div>
+          <div class="table-wrap">
+            <table id="acrossPairTestsTable">
+              <thead>
+                <tr>
+                  <th>Comparison</th>
+                  <th>N</th>
+                  <th>Mean diff</th>
+                  <th>T p-value</th>
+                  <th>Bootstrap 95% CI</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Mean-loss bars</h2>
+          <span>Bars use complete matched cases and include the heuristic benchmark</span>
+        </div>
+        <div id="acrossPairMeanBars" class="pair-mean-grid"></div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Mean loss by demand distribution</h2>
+          <span>One shared scale across all distributions; four methods per panel</span>
+        </div>
+        <div id="acrossDistributionMeanBars" class="distribution-mean-grid"></div>
+      </article>
+
+      <div class="grid two">
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Under / similar / over pricing</h2>
+            <span>Similar means within +/-5% of the optimal price</span>
+          </div>
+          <div id="acrossDirectionAll" class="direction-list"></div>
+        </article>
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Under / similar / over pricing</h2>
+            <span>Similar means within +/-5% of the optimal price</span>
+          </div>
+          <div id="acrossDirectionMatched" class="direction-list"></div>
+        </article>
+      </div>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Quartile comparison</h2>
+          <span>Q1 · median · Q3, winner highlighted by column</span>
+        </div>
+        <div class="table-wrap">
+          <table id="quantileTable">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Q1</th>
+                <th>Median</th>
+                <th>Q3</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Density of relative revenue loss</h2>
+          <span id="densityCutoffLabel">Kernel density over 0-15% relative revenue loss</span>
+        </div>
+        <div id="lossDensity" class="density-plot"></div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>CDF of relative revenue loss</h2>
+          <span>Higher curve means more cases at or below each loss level</span>
+        </div>
+        <div id="lossCdf" class="cdf-plot"></div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Density of paired differences</h2>
+          <span>Gemini comparisons only; displayed from -10% to +10%; negative favors Gemini</span>
+        </div>
+        <div id="diffDensity" class="density-plot"></div>
+      </article>
+
+      <div class="grid two">
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Paired difference diagnostics</h2>
+            <span>Difference quartiles and win share</span>
+          </div>
+          <div class="table-wrap">
+            <table id="pairedDiffTable">
+              <thead>
+                <tr>
+                  <th>Comparison</th>
+                  <th>N</th>
+                  <th>Mean diff</th>
+                  <th>Median diff</th>
+                  <th>P25 diff</th>
+                  <th>P75 diff</th>
+                  <th>T p-value</th>
+                  <th>Bootstrap mean 95% CI</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
+    </section>
+
+    <section id="withinTests" class="panel">
+      <div class="toolbar card" aria-label="Within-model test controls">
+        <label>LLMs
+          <select id="withinTestModels" multiple size="3"></select>
+        </label>
+        <label>Only varying column
+          <select id="withinTestField"></select>
+        </label>
+        <fieldset class="checkbox-filter within-level-filter" id="withinTestIncludedLevelsWrap">
+          <legend>Included levels</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="withinTestIncludedLevelsSummary">Select 2 or more levels</span>
+            <label class="checkbox-chip checkbox-chip-control" for="withinTestIncludedLevelsAll">
+              <input id="withinTestIncludedLevelsAll" type="checkbox">
+              <span>Select all</span>
+            </label>
+          </div>
+          <div class="checkbox-list" id="withinTestIncludedLevels"></div>
+        </fieldset>
+      </div>
+
+      <article class="comparison-note card" id="withinTestsNote"></article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2 id="withinTestCombinedTitle">Expert role: matched mean loss</h2>
+          <span id="withinTestCombinedNote">No and Yes shown side by side for each LLM</span>
+        </div>
+        <div id="withinTestCombinedChart" class="pair-mean-grid"></div>
+      </article>
+
+      <div class="within-test-panel-grid" id="withinTestPanels"></div>
+    </section>
+
+    <section id="within" class="panel">
+      <div class="toolbar card" aria-label="Within-model controls">
+        <label>Group cases by
+          <select id="withinGroupPicker"></select>
+        </label>
+      </div>
+
+      <article class="comparison-note card" id="withinNote"></article>
+      <div class="model-panel-grid" id="withinModelPanels"></div>
+    </section>
+  </main>
+
+  <footer>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</footer>
+  <script src="app.js?v=20260815t"></script>
+</body>
+</html>

@@ -1925,82 +1925,8 @@ function renderOverview() {
         || a.meanLoss - b.meanLoss
         || a.model.localeCompare(b.model)
     );
-
-  const groupSummaries = Object.entries(GROUP_OPTIONS).map(([field, label]) => {
-    const levelMap = new Map();
-    benchmarkCompleted.forEach(caseRows => {
-      const level = levelValue(caseRows[models[0]]?.[field]);
-      const grouped = levelMap.get(level) || [];
-      grouped.push(caseRows);
-      levelMap.set(level, grouped);
-    });
-
-    const levelSummaries = [...levelMap.entries()].map(([level, levelCases]) => {
-      const modelItems = overviewMethods.map(model => {
-        const losses = benchmarkLosses(levelCases, model);
-        return {
-          model,
-          n: losses.length,
-          meanLoss: mean(losses),
-        };
-      }).filter(item => Number.isFinite(item.meanLoss));
-
-      const bestMeanLoss = Math.min(...modelItems.map(item => item.meanLoss));
-      const bestModels = modelItems
-        .filter(item => Math.abs(item.meanLoss - bestMeanLoss) < 1e-12)
-        .sort((a, b) => b.n - a.n || a.model.localeCompare(b.model));
-      const bestModel = bestModels[0];
-
-      return {
-        level,
-        caseCount: levelCases.length,
-        modelItems,
-        bestModels,
-        bestModel,
-      };
-    }).filter(item => item.caseCount && item.bestModel && item.modelItems.length)
-      .sort((a, b) =>
-        displayLevel(a.level).localeCompare(displayLevel(b.level))
-          || b.caseCount - a.caseCount
-      );
-
-    const bestLevel = [...levelSummaries]
-      .sort((a, b) =>
-        a.bestModel.meanLoss - b.bestModel.meanLoss
-          || b.caseCount - a.caseCount
-          || displayLevel(a.level).localeCompare(displayLevel(b.level))
-      )[0];
-
-    return { field, label, bestLevel, levelSummaries };
-  }).filter(item => item.bestLevel);
-
-  const levelWinners = groupSummaries.flatMap(({ label, levelSummaries }) =>
-    levelSummaries.map(item => ({
-      groupLabel: label,
-      levelLabel: displayLevel(item.level),
-      bestModels: item.bestModels.map(model => model.model),
-      meanLoss: item.bestModel.meanLoss,
-      caseCount: item.caseCount,
-      modelItems: item.modelItems,
-    }))
-  );
-
-  const variableWinCounts = new Map(overviewMethods.map(model => [model, 0]));
-  levelWinners.forEach(item => {
-    item.bestModels.forEach(model => {
-      variableWinCounts.set(model, (variableWinCounts.get(model) || 0) + 1);
-    });
-  });
-
-  const levelLossesByModel = new Map(overviewMethods.map(model => [model, []]));
-  levelWinners.forEach(item => {
-    item.modelItems.forEach(modelItem => {
-      if (!Number.isFinite(modelItem.meanLoss)) return;
-      levelLossesByModel.get(modelItem.model)?.push(modelItem.meanLoss);
-    });
-  });
   document.querySelector("#overviewNote").innerHTML =
-    `<strong>${fmtInt(completed.length)} complete paired LLM cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Overview comparisons include <strong>Heuristic</strong> and therefore use ${fmtInt(benchmarkCompleted.length)} cases with a valid heuristic benchmark. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method. The mean-loss chart summarizes the four methods across <strong>${fmtInt(levelWinners.length)}</strong> variable levels in total, and tied best methods at a level each earn <strong>1 point</strong>.</span>`;
+    `<strong>${fmtInt(completed.length)} complete paired LLM cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Overview comparisons include <strong>Heuristic</strong> and therefore use ${fmtInt(benchmarkCompleted.length)} cases with a valid heuristic benchmark. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method. The mean-loss chart summarizes the four methods across that same shared case set.</span>`;
 
   document.querySelector("#overviewCaseLeaderboardTable tbody").innerHTML = rankedCaseLeaderboard.length
     ? rankedCaseLeaderboard.map((item, index) => `
@@ -2014,30 +1940,13 @@ function renderOverview() {
         </tr>`).join("")
     : `<tr><td colspan="6" class="quiet">No case leaderboard is available for the current filters.</td></tr>`;
 
-  const aggregateSummaries = overviewMethods.map(model => {
-    const losses = levelLossesByModel.get(model) || [];
-    return {
-      model,
-      comparedLevels: losses.length,
-      meanLoss: mean(losses),
-      levelPoints: variableWinCounts.get(model) || 0,
-    };
-  }).filter(item => Number.isFinite(item.meanLoss));
-
-  const rankedSummaries = [...aggregateSummaries]
-    .sort((a, b) =>
-      b.levelPoints - a.levelPoints
-        || a.meanLoss - b.meanLoss
-        || a.model.localeCompare(b.model)
-    );
-
-  document.querySelector("#overviewLeaderboardChart").innerHTML = rankedSummaries.length
-    ? renderAcrossMeanChart(rankedSummaries.map(item => ({
+  document.querySelector("#overviewLeaderboardChart").innerHTML = rankedCaseLeaderboard.length
+    ? renderAcrossMeanChart(rankedCaseLeaderboard.map(item => ({
         model: item.model,
-        n: item.comparedLevels,
+        n: item.comparedCases,
         meanLoss: item.meanLoss,
       })))
-    : `<p class="quiet">No aggregate mean-loss chart is available for the current filters.</p>`;
+    : `<p class="quiet">No case mean-loss chart is available for the current filters.</p>`;
 
   const caseMetricSummaries = overviewMethods.map(model => {
     const losses = benchmarkLosses(benchmarkCompleted, model);

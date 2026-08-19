@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=20260819r">
+  <link rel="stylesheet" href="styles.css?v=20260819t">
 </head>
 <body>
   <header class="topbar">
@@ -53,8 +53,8 @@
 
       <article class="card chart-card">
         <div class="card-heading">
-          <h2>Mean revenue loss across all levels</h2>
-          <span>Each variable level counts once</span>
+          <h2>Mean revenue loss across cases</h2>
+          <span>All complete benchmark cases together</span>
         </div>
         <div id="overviewLeaderboardChart" class="pair-mean-grid"></div>
       </article>
@@ -603,7 +603,10 @@
     </section>
   </main>
 
-  <footer>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</footer>
-  <script src="app.js?v=20260819r"></script>
+  <footer>
+    <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
+    <div>2.1.1</div>
+  </footer>
+  <script src="app.js?v=20260819t"></script>
 </body>
 </html>

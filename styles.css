@@ -97,6 +97,7 @@ code {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin: 14px 0 16px;
   border-bottom: 1px solid var(--line);
@@ -183,12 +184,6 @@ input[type="search"] {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 10px;
-}
-
-.checkbox-chip-control {
-  flex: 0 0 auto;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .checkbox-filter-summary {
@@ -649,14 +644,6 @@ svg .model-fallback { fill: var(--tie); }
   font-weight: 800;
 }
 
-.level-mean-chart .chart-x-label,
-.pair-mean-chart .chart-x-label,
-.direction-chart .chart-x-label {
-  fill: var(--ink);
-  font-size: 10px;
-  font-weight: 800;
-}
-
 .level-mean-chart .grid-line,
 .pair-mean-chart .grid-line,
 .direction-chart .grid-line {
@@ -760,6 +747,15 @@ svg .model-fallback { fill: var(--tie); }
   font-size: 12px;
   text-align: center;
   text-transform: capitalize;
+}
+
+.overview-card-meta {
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .distribution-mean-chart {

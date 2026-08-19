@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=20260815t">
+  <link rel="stylesheet" href="styles.css?v=20260819r">
 </head>
 <body>
   <header class="topbar">
@@ -21,11 +21,90 @@
 
   <main>
     <nav class="tabs" aria-label="Analysis panels">
+      <button class="tab" data-tab="overview">Overview</button>
       <button class="tab active" data-tab="tests">Tests (Across Models)</button>
       <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
     </nav>
 
-    <section id="across" class="panel">
+    <section id="overview" class="panel">
+      <article class="comparison-note card" id="overviewNote"></article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Case leaderboard</h2>
+          <span>Ranking across all complete benchmark cases with shared tie points</span>
+        </div>
+        <div class="table-wrap">
+          <table id="overviewCaseLeaderboardTable">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Model</th>
+                <th>Case points</th>
+                <th>Point share</th>
+                <th>Mean loss across cases</th>
+                <th>Compared cases</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Mean revenue loss across all levels</h2>
+          <span>Each variable level counts once</span>
+        </div>
+        <div id="overviewLeaderboardChart" class="pair-mean-grid"></div>
+      </article>
+
+      <div class="grid two">
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Near-optimal leaderboard</h2>
+            <span>Most cases with relative revenue loss at or below 5%</span>
+          </div>
+          <div class="table-wrap">
+            <table id="overviewNearOptimalTable">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Model</th>
+                  <th>Near-optimal cases</th>
+                  <th>Share</th>
+                  <th>Compared cases</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Severe-loss leaderboard</h2>
+            <span>Fewest cases with relative revenue loss at or above 25%</span>
+          </div>
+          <div class="table-wrap">
+            <table id="overviewSevereLossTable">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Model</th>
+                  <th>Severe-loss cases</th>
+                  <th>Share</th>
+                  <th>Compared cases</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="across" class="panel" hidden>
       <div class="toolbar card" aria-label="Filters">
         <label>Group table by
           <select id="groupPicker"></select>
@@ -109,6 +188,14 @@
           <div id="winBars" class="bar-list"></div>
         </article>
       </div>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Under / similar / over pricing</h2>
+          <span>Complete matched cases · Similar means within +/-5% of the optimal price</span>
+        </div>
+        <div id="acrossOverviewDirectionBars" class="direction-list"></div>
+      </article>
 
       <article class="card table-card">
         <div class="card-heading">
@@ -290,8 +377,8 @@
       <div class="grid two">
         <article class="card table-card">
           <div class="card-heading">
-            <h2>Mean loss by method</h2>
-            <span>Includes heuristic benchmark; winner highlighted</span>
+            <h2>Performance by method</h2>
+            <span>Includes heuristic benchmark; lower severe-loss and higher near-optimal are better</span>
           </div>
           <div class="table-wrap">
             <table id="acrossMeanTable">
@@ -300,6 +387,8 @@
                   <th>Method</th>
                   <th>N</th>
                   <th>Mean</th>
+                  <th>Near-optimal</th>
+                  <th>Severe-loss</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -336,6 +425,23 @@
         <div id="acrossPairMeanBars" class="pair-mean-grid"></div>
       </article>
 
+      <div class="grid two">
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Near-optimal rate</h2>
+            <span>Relative revenue loss &le; 5%</span>
+          </div>
+          <div id="nearOptimalBars" class="bar-list"></div>
+        </article>
+        <article class="card metric-panel">
+          <div class="card-heading">
+            <h2>Severe-loss rate</h2>
+            <span>Relative revenue loss &ge; 25%</span>
+          </div>
+          <div id="severeLossBars" class="bar-list"></div>
+        </article>
+      </div>
+
       <article class="card chart-card">
         <div class="card-heading">
           <h2>Mean loss by demand distribution</h2>
@@ -344,22 +450,34 @@
         <div id="acrossDistributionMeanBars" class="distribution-mean-grid"></div>
       </article>
 
-      <div class="grid two">
-        <article class="card metric-panel">
-          <div class="card-heading">
-            <h2>Under / similar / over pricing</h2>
-            <span>Similar means within +/-5% of the optimal price</span>
-          </div>
-          <div id="acrossDirectionAll" class="direction-list"></div>
-        </article>
-        <article class="card metric-panel">
-          <div class="card-heading">
-            <h2>Under / similar / over pricing</h2>
-            <span>Similar means within +/-5% of the optimal price</span>
-          </div>
-          <div id="acrossDirectionMatched" class="direction-list"></div>
-        </article>
-      </div>
+      <article class="card metric-panel">
+        <div class="card-heading">
+          <h2>Under / similar / over pricing</h2>
+          <span>Complete matched cases only</span>
+        </div>
+        <div id="acrossDirectionMatched" class="direction-list"></div>
+      </article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Direction detail</h2>
+          <span>Complete matched cases only</span>
+        </div>
+        <div class="table-wrap">
+          <table id="acrossDirectionMatchedTable">
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>N</th>
+                <th>Under</th>
+                <th>Similar</th>
+                <th>Over</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
 
       <article class="card table-card">
         <div class="card-heading">
@@ -441,14 +559,20 @@
         <label>Only varying column
           <select id="withinTestField"></select>
         </label>
-        <fieldset class="checkbox-filter within-level-filter" id="withinTestIncludedLevelsWrap">
+        <label>Comparison mode
+          <select id="withinTestMode"></select>
+        </label>
+        <label id="withinTestLevelALabel">First case level
+          <select id="withinTestLevelA"></select>
+        </label>
+        <label id="withinTestLevelBLabel">Second case level
+          <select id="withinTestLevelB"></select>
+        </label>
+        <fieldset class="checkbox-filter within-level-filter" id="withinTestIncludedLevelsWrap" hidden>
           <legend>Included levels</legend>
           <div class="checkbox-filter-top">
             <span class="checkbox-filter-summary" id="withinTestIncludedLevelsSummary">Select 2 or more levels</span>
-            <label class="checkbox-chip checkbox-chip-control" for="withinTestIncludedLevelsAll">
-              <input id="withinTestIncludedLevelsAll" type="checkbox">
-              <span>Select all</span>
-            </label>
+            <button id="withinTestIncludedLevelsReset" class="mini-button" type="button">Select all</button>
           </div>
           <div class="checkbox-list" id="withinTestIncludedLevels"></div>
         </fieldset>
@@ -467,7 +591,7 @@
       <div class="within-test-panel-grid" id="withinTestPanels"></div>
     </section>
 
-    <section id="within" class="panel">
+    <section id="within" class="panel" hidden>
       <div class="toolbar card" aria-label="Within-model controls">
         <label>Group cases by
           <select id="withinGroupPicker"></select>
@@ -480,6 +604,6 @@
   </main>
 
   <footer>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</footer>
-  <script src="app.js?v=20260815t"></script>
+  <script src="app.js?v=20260819r"></script>
 </body>
 </html>

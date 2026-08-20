@@ -5,6 +5,9 @@ let rowsByModel = new Map();
 let answeredRowsByModel = new Map();
 const withinFieldCache = new Map();
 const withinGroupSummaryCache = new Map();
+const tTestRowCache = new Map();
+const withinTTestPairSummaryCache = new Map();
+const matchedLevelDiffCache = new Map();
 
 let selectedTab = "tests";
 let selectedGroup = "demand_model";
@@ -18,6 +21,17 @@ let selectedWithinTestMode = "selected";
 let selectedWithinTestLevelA = "";
 let selectedWithinTestLevelB = "";
 let selectedWithinTestIncludedLevels = [];
+let selectedTTestMode = "models";
+let selectedTTestModels = [];
+let selectedTTestCompareField = "scenario_subtype";
+let selectedTTestCompareLevels = [];
+let selectedTTestField = "demand_model";
+let selectedTTestLevels = [];
+let selectedTTestWithinModels = [];
+let selectedTTestWithinCompareField = "parameter_set";
+let selectedTTestWithinCompareLevels = [];
+let selectedTTestWithinField = "demand_model";
+let selectedTTestWithinLevels = [];
 
 const MODEL_META = {
   "GPT-5 mini": { colorClass: "model-gpt", short: "GPT" },
@@ -43,7 +57,7 @@ const GROUP_OPTIONS = {
   demand_model: "Demand model",
   history_length: "History length",
   sigma: "Noise sigma",
-  parameter_set: "Parameter set",
+  parameter_set: "Parameter set (A/B/C)",
   has_environment: "Has environment",
   next_env: "Next environment",
   mc: "Marginal cost",
@@ -60,6 +74,7 @@ const TEST_FILTER_FIELDS = [
   "demand_model",
   "sigma",
   "history_length",
+  "parameter_set",
   "next_env",
   "mc",
   "p_c_current",
@@ -212,6 +227,29 @@ function benchmarkLoss(caseRows, method) {
 
 function benchmarkLosses(cases, method) {
   return cases.map(caseRows => benchmarkLoss(caseRows, method)).filter(Number.isFinite);
+}
+
+function cacheKeyPart(values) {
+  return values.length ? values.join(",") : "*";
+}
+
+function tTestFilterSignature(excludedFields = []) {
+  return TEST_FILTER_FIELDS
+    .filter(field => !excludedFields.includes(field))
+    .map(field => `${field}=${cacheKeyPart(selectedTestFilters[field] || [])}`)
+    .join("|");
+}
+
+function caseRowIdentityKey(row) {
+  return row.case_key || [
+    ...benchmarkInputColumns().map(field => levelValue(row[field])),
+    levelValue(row.variant),
+    levelValue(row.instance_id),
+  ].join("|");
+}
+
+function tTestRowLoss(row, method) {
+  return method === HEURISTIC_LABEL ? row.heuristic_rel_rev_loss : row.rel_rev_loss;
 }
 
 function pairedBenchmarkDiffs(caseRows, methodA, methodB) {
@@ -921,6 +959,237 @@ function populateWithinTestControls() {
   }
 }
 
+function availableTTestMethods() {
+  const hasHeuristic = rows.some(row => Number.isFinite(row.heuristic_rel_rev_loss));
+  return ACROSS_CHART_ORDER.filter(method =>
+    method === HEURISTIC_LABEL ? hasHeuristic : models.includes(method)
+  );
+}
+
+function selectedTTestMethodValues(available = availableTTestMethods(), minimumCount = 2) {
+  if (!available.length) {
+    selectedTTestModels = [];
+    return selectedTTestModels;
+  }
+  const validSelected = selectedTTestModels.filter(model => available.includes(model));
+  selectedTTestModels = validSelected.length >= minimumCount ? validSelected : [...available];
+  return selectedTTestModels;
+}
+
+function tTestCasesForMethods(methods) {
+  const completed = completeCases(comparableCases(passesTestFilters));
+  return methods.includes(HEURISTIC_LABEL)
+    ? completed.filter(caseRows => Number.isFinite(heuristicLoss(caseRows)))
+    : completed;
+}
+
+function passesTTestRowFilters(row, excludedFields = []) {
+  return TEST_FILTER_FIELDS.every(field => {
+    if (excludedFields.includes(field)) return true;
+    const selected = selectedTestFilters[field];
+    if (!Array.isArray(selected)) return true;
+    if (!selected.length) return false;
+    return selected.includes(levelValue(row[field]));
+  });
+}
+
+function tTestRowsForMethod(method, excludedFields = []) {
+  const normalizedExcluded = [...excludedFields].sort();
+  const cacheKey = [method, normalizedExcluded.join(","), tTestFilterSignature(normalizedExcluded)].join("||");
+  if (tTestRowCache.has(cacheKey)) return tTestRowCache.get(cacheKey);
+
+  let result;
+  if (method === HEURISTIC_LABEL) {
+    const uniqueRows = new Map();
+    rows.forEach(row => {
+      if (!row.answered || !Number.isFinite(row.heuristic_rel_rev_loss)) return;
+      if (!passesTTestRowFilters(row, normalizedExcluded)) return;
+      const key = caseRowIdentityKey(row);
+      if (!uniqueRows.has(key)) uniqueRows.set(key, row);
+    });
+    result = [...uniqueRows.values()];
+  } else {
+    result = rows.filter(row =>
+      row.model === method
+      && row.answered
+      && Number.isFinite(row.rel_rev_loss)
+      && passesTTestRowFilters(row, normalizedExcluded)
+    );
+  }
+  tTestRowCache.set(cacheKey, result);
+  return result;
+}
+
+function withinTTestPairSummary(method, compareField) {
+  const cacheKey = [method, compareField, tTestFilterSignature([compareField])].join("||");
+  if (withinTTestPairSummaryCache.has(cacheKey)) return withinTTestPairSummaryCache.get(cacheKey);
+
+  const sourceRows = tTestRowsForMethod(method, [compareField]);
+  const levelSet = new Set();
+
+  sourceRows.forEach(row => {
+    const compareLevel = levelValue(row[compareField]);
+    levelSet.add(compareLevel);
+  });
+
+  const summary = {
+    levels: sortLevelValues([...levelSet]),
+  };
+  withinTTestPairSummaryCache.set(cacheKey, summary);
+  return summary;
+}
+
+function availableTTestCompareFields(methods) {
+  return Object.keys(GROUP_OPTIONS).filter(field => {
+    const summaries = methods.map(method => withinTTestPairSummary(method, field));
+    return summaries.some(summary => summary.levels.length >= 2);
+  });
+}
+
+function availableTTestCompareLevels(field, methods) {
+  return sortLevelValues(
+    [...new Set(methods.flatMap(method =>
+      withinTTestPairSummary(method, field).levels
+    ))]
+  );
+}
+
+function selectedTTestCompareLevelValues(field, methods, available = availableTTestCompareLevels(field, methods)) {
+  if (!available.length) {
+    selectedTTestCompareLevels = [];
+    return selectedTTestCompareLevels;
+  }
+  const validSelected = selectedTTestCompareLevels.filter(level => available.includes(level));
+  selectedTTestCompareLevels = validSelected.length >= 2 ? validSelected : [...available];
+  return selectedTTestCompareLevels;
+}
+
+function availableTTestSplitFields(methods) {
+  if (selectedTTestMode === "levels") {
+    return Object.keys(GROUP_OPTIONS).filter(field =>
+      field !== selectedTTestCompareField
+      && availableTTestSplitLevels(field, methods).length
+    );
+  }
+  return Object.keys(GROUP_OPTIONS).filter(field =>
+    availableTTestSplitLevels(field, methods).length
+  );
+}
+
+function availableTTestSplitLevels(field, methods) {
+  if (selectedTTestMode === "levels") {
+    return sortLevelValues(
+      [...new Set(methods.flatMap(method =>
+        tTestRowsForMethod(method, [selectedTTestCompareField]).map(row => levelValue(row[field]))
+      ))]
+    );
+  }
+  const caseRows = tTestCasesForMethods(methods);
+  return sortLevelValues(
+    [...new Set(caseRows.map(item => levelValue(item[models[0]]?.[field])))]
+  );
+}
+
+function selectedTTestSplitLevels(field, methods, available = availableTTestSplitLevels(field, methods)) {
+  if (!available.length) {
+    selectedTTestLevels = [];
+    return selectedTTestLevels;
+  }
+  const validSelected = selectedTTestLevels.filter(level => available.includes(level));
+  selectedTTestLevels = validSelected.length ? validSelected : [...available];
+  return selectedTTestLevels;
+}
+
+function populateTTestControls() {
+  const availableMethods = availableTTestMethods();
+  const modelMinimum = selectedTTestMode === "levels" ? 1 : 2;
+  const selectedMethods = selectedTTestMethodValues(availableMethods, modelMinimum);
+
+  const modelHost = document.querySelector("#tTestModelList");
+  const modelSummary = document.querySelector("#tTestModelSummary");
+  modelHost.innerHTML = availableMethods.length
+    ? availableMethods.map(model => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${model}" ${selectedMethods.includes(model) ? "checked" : ""}>
+          <span>${model}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No models available.</p>`;
+  modelSummary.textContent = availableMethods.length
+    ? `${fmtInt(selectedMethods.length)} of ${fmtInt(availableMethods.length)} models selected`
+    : "No models available";
+
+  const modePicker = document.querySelector("#tTestMode");
+  modePicker.value = selectedTTestMode;
+
+  const compareFieldWrap = document.querySelector("#tTestCompareFieldWrap");
+  const compareLevelWrap = document.querySelector("#tTestCompareLevelWrap");
+  const compareFieldPicker = document.querySelector("#tTestCompareField");
+
+  if (selectedTTestMode === "levels") {
+    compareFieldWrap.hidden = false;
+    compareLevelWrap.hidden = false;
+    const validCompareFields = availableTTestCompareFields(selectedMethods);
+    if (!validCompareFields.includes(selectedTTestCompareField)) {
+      selectedTTestCompareField = validCompareFields[0] || "";
+    }
+    compareFieldPicker.innerHTML = validCompareFields.length
+      ? validCompareFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
+      : `<option value="">No variables available</option>`;
+    compareFieldPicker.value = selectedTTestCompareField;
+
+    const availableCompareLevels = selectedTTestCompareField
+      ? availableTTestCompareLevels(selectedTTestCompareField, selectedMethods)
+      : [];
+    const selectedCompareLevels = selectedTTestCompareField
+      ? selectedTTestCompareLevelValues(selectedTTestCompareField, selectedMethods, availableCompareLevels)
+      : [];
+    const compareLevelHost = document.querySelector("#tTestCompareLevelList");
+    const compareLevelSummary = document.querySelector("#tTestCompareLevelSummary");
+    compareLevelHost.innerHTML = availableCompareLevels.length
+      ? availableCompareLevels.map(level => `
+          <label class="checkbox-chip">
+            <input type="checkbox" value="${level}" ${selectedCompareLevels.includes(level) ? "checked" : ""}>
+            <span>${displayLevel(level)}</span>
+          </label>
+        `).join("")
+      : `<p class="quiet">No levels available.</p>`;
+    compareLevelSummary.textContent = availableCompareLevels.length
+      ? `${fmtInt(selectedCompareLevels.length)} of ${fmtInt(availableCompareLevels.length)} levels selected`
+      : "No levels available";
+  } else {
+    compareFieldWrap.hidden = true;
+    compareLevelWrap.hidden = true;
+  }
+
+  const fieldPicker = document.querySelector("#tTestField");
+  const validFields = availableTTestSplitFields(selectedMethods);
+  if (!validFields.includes(selectedTTestField)) selectedTTestField = validFields[0] || "";
+  fieldPicker.innerHTML = validFields.length
+    ? validFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
+    : `<option value="">No variables available</option>`;
+  fieldPicker.value = selectedTTestField;
+
+  const availableLevels = selectedTTestField ? availableTTestSplitLevels(selectedTTestField, selectedMethods) : [];
+  const selectedLevels = selectedTTestField ? selectedTTestSplitLevels(selectedTTestField, selectedMethods, availableLevels) : [];
+  const levelHost = document.querySelector("#tTestLevelList");
+  const levelSummary = document.querySelector("#tTestLevelSummary");
+  levelHost.innerHTML = availableLevels.length
+    ? availableLevels.map(level => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${level}" ${selectedLevels.includes(level) ? "checked" : ""}>
+          <span>${displayLevel(level)}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No levels available.</p>`;
+  levelSummary.textContent = availableLevels.length
+    ? `${fmtInt(selectedLevels.length)} of ${fmtInt(availableLevels.length)} levels selected`
+    : "No levels available";
+
+  const levelLegend = document.querySelector("#tTestLevelLegend");
+  levelLegend.textContent = selectedTTestMode === "levels" ? "Included split levels" : "Included levels";
+}
+
 function passesFilters(row) {
   if (!selectedAcrossDemandModels.length) return false;
   return selectedAcrossDemandModels.includes(levelValue(row.demand_model));
@@ -950,8 +1219,15 @@ function benchmarkInputColumns() {
 
 function withinMatchKey(row, varyingField) {
   const linkedFields = varyingField === "dist_hint_applied" ? ["dist_hint"] : [];
+  const derivedFields = varyingField === "parameter_set" ? ["instance_type", "closing", "p_star"] : [];
   return benchmarkInputColumns()
-    .filter(field => field !== varyingField && !linkedFields.includes(field) && field !== "variant" && field !== "instance_id")
+    .filter(field =>
+      field !== varyingField
+      && !linkedFields.includes(field)
+      && !derivedFields.includes(field)
+      && field !== "variant"
+      && field !== "instance_id"
+    )
     .map(field => levelValue(row[field]))
     .join("|");
 }
@@ -965,6 +1241,9 @@ function rebuildDerivedIndexes() {
   );
   withinFieldCache.clear();
   withinGroupSummaryCache.clear();
+  tTestRowCache.clear();
+  withinTTestPairSummaryCache.clear();
+  matchedLevelDiffCache.clear();
 }
 
 function getWithinFieldModelCache(model, field) {
@@ -1883,6 +2162,522 @@ function renderTests() {
     </tr>`).join("");
 }
 
+function tTestPairs(methods) {
+  const pairs = [];
+  for (let i = 0; i < methods.length; i += 1) {
+    for (let j = i + 1; j < methods.length; j += 1) {
+      pairs.push([methods[i], methods[j]]);
+    }
+  }
+  return pairs;
+}
+
+function pairedEvidenceForMethods(caseRows, modelA, modelB, seed) {
+  return modelA === HEURISTIC_LABEL || modelB === HEURISTIC_LABEL
+    ? pairedBenchmarkEvidence(caseRows, modelA, modelB, seed)
+    : pairedDifferenceEvidence(caseRows, modelA, modelB, seed);
+}
+
+function matchedLevelDiffsForMethod(method, compareField, levelA, levelB, splitField = "", splitLevel = "") {
+  const cacheKey = [
+    method,
+    compareField,
+    levelA,
+    levelB,
+    splitField || "-",
+    splitLevel || "-",
+    tTestFilterSignature([compareField]),
+  ].join("||");
+  if (matchedLevelDiffCache.has(cacheKey)) return matchedLevelDiffCache.get(cacheKey);
+
+  const sourceRows = tTestRowsForMethod(method, [compareField]).filter(row => {
+    const compareLevel = levelValue(row[compareField]);
+    if (compareLevel !== levelA && compareLevel !== levelB) return false;
+    if (splitField && splitLevel && levelValue(row[splitField]) !== splitLevel) return false;
+    return Number.isFinite(tTestRowLoss(row, method));
+  });
+
+  const byKey = new Map();
+  sourceRows.forEach(row => {
+    const key = withinMatchKey(row, compareField);
+    const compareLevel = levelValue(row[compareField]);
+    const bucket = byKey.get(key) || new Map();
+    if (!bucket.has(compareLevel)) bucket.set(compareLevel, row);
+    byKey.set(key, bucket);
+  });
+
+  const diffs = [...byKey.values()].flatMap(bucket => {
+    const rowA = bucket.get(levelA);
+    const rowB = bucket.get(levelB);
+    if (!rowA || !rowB) return [];
+    const diff = tTestRowLoss(rowA, method) - tTestRowLoss(rowB, method);
+    return Number.isFinite(diff) ? [diff] : [];
+  });
+  matchedLevelDiffCache.set(cacheKey, diffs);
+  return diffs;
+}
+
+function levelPairLabel(field, levelA, levelB) {
+  return `${withinLevelLabel(field, levelA)} - ${withinLevelLabel(field, levelB)}`;
+}
+
+function selectedValuesOrAll(currentValues, availableValues, minimumCount = 1) {
+  if (!availableValues.length) return [];
+  const validSelected = currentValues.filter(value => availableValues.includes(value));
+  return validSelected.length >= minimumCount ? validSelected : [...availableValues];
+}
+
+function availableAcrossTTestLevels(field, methods) {
+  const caseRows = tTestCasesForMethods(methods);
+  return sortLevelValues(
+    [...new Set(caseRows.map(item => levelValue(item[models[0]]?.[field])))]
+  );
+}
+
+function availableWithinTTestSplitLevels(field, methods, compareField) {
+  return sortLevelValues(
+    [...new Set(methods.flatMap(method =>
+      tTestRowsForMethod(method, [compareField]).map(row => levelValue(row[field]))
+    ))]
+  );
+}
+
+function populateAcrossTTestControls() {
+  const availableMethods = availableTTestMethods();
+  selectedTTestModels = selectedValuesOrAll(selectedTTestModels, availableMethods, 2);
+
+  const modelHost = document.querySelector("#tTestAcrossModelList");
+  const modelSummary = document.querySelector("#tTestAcrossModelSummary");
+  modelHost.innerHTML = availableMethods.length
+    ? availableMethods.map(model => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${model}" ${selectedTTestModels.includes(model) ? "checked" : ""}>
+          <span>${model}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No models available.</p>`;
+  modelSummary.textContent = availableMethods.length
+    ? `${fmtInt(selectedTTestModels.length)} of ${fmtInt(availableMethods.length)} models selected`
+    : "No models available";
+
+  const validFields = Object.keys(GROUP_OPTIONS).filter(field =>
+    availableAcrossTTestLevels(field, selectedTTestModels).length
+  );
+  if (!validFields.includes(selectedTTestField)) selectedTTestField = validFields[0] || "";
+  const fieldPicker = document.querySelector("#tTestAcrossField");
+  fieldPicker.innerHTML = validFields.length
+    ? validFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
+    : `<option value="">No variables available</option>`;
+  fieldPicker.value = selectedTTestField;
+
+  const availableLevels = selectedTTestField ? availableAcrossTTestLevels(selectedTTestField, selectedTTestModels) : [];
+  selectedTTestLevels = selectedValuesOrAll(selectedTTestLevels, availableLevels, 1);
+  const levelHost = document.querySelector("#tTestAcrossLevelList");
+  const levelSummary = document.querySelector("#tTestAcrossLevelSummary");
+  levelHost.innerHTML = availableLevels.length
+    ? availableLevels.map(level => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${level}" ${selectedTTestLevels.includes(level) ? "checked" : ""}>
+          <span>${displayLevel(level)}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No levels available.</p>`;
+  levelSummary.textContent = availableLevels.length
+    ? `${fmtInt(selectedTTestLevels.length)} of ${fmtInt(availableLevels.length)} levels selected`
+    : "No levels available";
+}
+
+function populateWithinTTestControls() {
+  const availableMethods = availableTTestMethods();
+  selectedTTestWithinModels = selectedValuesOrAll(selectedTTestWithinModels, availableMethods, 1);
+
+  const modelHost = document.querySelector("#tTestWithinModelList");
+  const modelSummary = document.querySelector("#tTestWithinModelSummary");
+  modelHost.innerHTML = availableMethods.length
+    ? availableMethods.map(model => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${model}" ${selectedTTestWithinModels.includes(model) ? "checked" : ""}>
+          <span>${model}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No models available.</p>`;
+  modelSummary.textContent = availableMethods.length
+    ? `${fmtInt(selectedTTestWithinModels.length)} of ${fmtInt(availableMethods.length)} models selected`
+    : "No models available";
+
+  const validCompareFields = availableTTestCompareFields(selectedTTestWithinModels);
+  if (!validCompareFields.includes(selectedTTestWithinCompareField)) {
+    selectedTTestWithinCompareField = validCompareFields.includes("parameter_set")
+      ? "parameter_set"
+      : (validCompareFields[0] || "");
+  }
+  const compareFieldPicker = document.querySelector("#tTestWithinCompareField");
+  compareFieldPicker.innerHTML = validCompareFields.length
+    ? validCompareFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
+    : `<option value="">No variables available</option>`;
+  compareFieldPicker.value = selectedTTestWithinCompareField;
+
+  const availableCompareLevels = selectedTTestWithinCompareField
+    ? availableTTestCompareLevels(selectedTTestWithinCompareField, selectedTTestWithinModels)
+    : [];
+  selectedTTestWithinCompareLevels = selectedValuesOrAll(selectedTTestWithinCompareLevels, availableCompareLevels, 2);
+  const compareLevelHost = document.querySelector("#tTestWithinCompareLevelList");
+  const compareLevelSummary = document.querySelector("#tTestWithinCompareLevelSummary");
+  compareLevelHost.innerHTML = availableCompareLevels.length
+    ? availableCompareLevels.map(level => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${level}" ${selectedTTestWithinCompareLevels.includes(level) ? "checked" : ""}>
+          <span>${displayLevel(level)}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No levels available.</p>`;
+  compareLevelSummary.textContent = availableCompareLevels.length
+    ? `${fmtInt(selectedTTestWithinCompareLevels.length)} of ${fmtInt(availableCompareLevels.length)} levels selected`
+    : "No levels available";
+
+  const validSplitFields = Object.keys(GROUP_OPTIONS).filter(field =>
+    field !== selectedTTestWithinCompareField
+    && availableWithinTTestSplitLevels(field, selectedTTestWithinModels, selectedTTestWithinCompareField).length
+  );
+  if (!validSplitFields.includes(selectedTTestWithinField)) {
+    selectedTTestWithinField = validSplitFields[0] || "";
+  }
+  const splitFieldPicker = document.querySelector("#tTestWithinField");
+  splitFieldPicker.innerHTML = validSplitFields.length
+    ? validSplitFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
+    : `<option value="">No variables available</option>`;
+  splitFieldPicker.value = selectedTTestWithinField;
+
+  const availableSplitLevels = selectedTTestWithinField
+    ? availableWithinTTestSplitLevels(selectedTTestWithinField, selectedTTestWithinModels, selectedTTestWithinCompareField)
+    : [];
+  selectedTTestWithinLevels = selectedValuesOrAll(selectedTTestWithinLevels, availableSplitLevels, 1);
+  const splitLevelHost = document.querySelector("#tTestWithinLevelList");
+  const splitLevelSummary = document.querySelector("#tTestWithinLevelSummary");
+  splitLevelHost.innerHTML = availableSplitLevels.length
+    ? availableSplitLevels.map(level => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${level}" ${selectedTTestWithinLevels.includes(level) ? "checked" : ""}>
+          <span>${displayLevel(level)}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No levels available.</p>`;
+  splitLevelSummary.textContent = availableSplitLevels.length
+    ? `${fmtInt(selectedTTestWithinLevels.length)} of ${fmtInt(availableSplitLevels.length)} levels selected`
+    : "No levels available";
+}
+
+function renderAcrossTTests() {
+  populateAcrossTTestControls();
+  const selectedMethods = selectedTTestModels;
+  const sourceCases = comparableCases(passesTestFilters);
+  const completed = completeCases(sourceCases);
+  const caseRows = tTestCasesForMethods(selectedMethods);
+  const activeFilters = activeTestFilterLabels();
+
+  document.querySelector("#caseCount").textContent = fmtInt(sourceCases.length);
+  document.querySelector("#completeCount").textContent = fmtInt(completed.length);
+  document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
+
+  if (selectedMethods.length < 2) {
+    document.querySelector("#tTestsAcrossNote").innerHTML =
+      `<strong>Select at least 2 models</strong><span>Choose two or more models to compute pairwise t tests.</span>`;
+    document.querySelector("#tTestAcrossOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No pairwise t tests are shown until at least two models are selected.</td></tr>`;
+    document.querySelector("#tTestAcrossByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No level-based t tests are shown until at least two models are selected.</td></tr>`;
+    return;
+  }
+
+  const pairs = tTestPairs(selectedMethods);
+  document.querySelector("#tTestsAcrossNote").innerHTML =
+    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.</span>`;
+
+  const overallRows = pairs.map(([modelA, modelB], index) => ({
+    modelA,
+    modelB,
+    result: pairedEvidenceForMethods(caseRows, modelA, modelB, 55121 + index * 101),
+  }));
+
+  document.querySelector("#tTestAcrossOverallTable tbody").innerHTML = overallRows.length
+    ? overallRows.map(({ modelA, modelB, result }) => `
+        <tr>
+          <th>${pairLabel(modelA, modelB)}</th>
+          <td>${fmtInt(result.n)}</td>
+          <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+          <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+          <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+        </tr>`).join("")
+    : `<tr><td colspan="5" class="quiet">No overall t tests are available.</td></tr>`;
+
+  const levelRows = selectedTTestLevels.flatMap((level, levelIndex) => {
+    const levelCases = caseRows.filter(item => levelValue(item[models[0]]?.[selectedTTestField]) === level);
+    return pairs.map(([modelA, modelB], pairIndex) => ({
+      level,
+      modelA,
+      modelB,
+      result: pairedEvidenceForMethods(levelCases, modelA, modelB, 61721 + levelIndex * 1009 + pairIndex * 97),
+    }));
+  });
+
+  document.querySelector("#tTestAcrossByLevelTable tbody").innerHTML = levelRows.length
+    ? levelRows.map(({ level, modelA, modelB, result }) => `
+        <tr>
+          <th>${displayLevel(level)}</th>
+          <td>${pairLabel(modelA, modelB)}</td>
+          <td>${fmtInt(result.n)}</td>
+          <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+          <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+          <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+        </tr>`).join("")
+    : `<tr><td colspan="6" class="quiet">No level-based t tests are available for the selected variable and levels.</td></tr>`;
+}
+
+function renderWithinTTests() {
+  populateWithinTTestControls();
+  const selectedMethods = selectedTTestWithinModels;
+  const sourceCases = comparableCases(passesTestFilters);
+  const completed = completeCases(sourceCases);
+  const activeFilters = activeTestFilterLabels();
+  const compareLevels = selectedTTestWithinCompareLevels;
+  const splitLevels = selectedTTestWithinLevels;
+
+  document.querySelector("#caseCount").textContent = fmtInt(sourceCases.length);
+  document.querySelector("#completeCount").textContent = fmtInt(completed.length);
+  document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
+
+  if (!selectedMethods.length || compareLevels.length < 2) {
+    document.querySelector("#tTestsWithinNote").innerHTML =
+      `<strong>Select at least 1 model and 2 levels</strong><span>Choose one or more models, then select two or more compared levels to compute matched level t tests.</span>`;
+    document.querySelector("#tTestWithinOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No matched level t tests are shown until at least one model and two compared levels are selected.</td></tr>`;
+    document.querySelector("#tTestWithinByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No split matched level t tests are shown until at least one model and two compared levels are selected.</td></tr>`;
+    return;
+  }
+
+  const comparePairs = tTestPairs(compareLevels);
+  const overallRows = selectedMethods.flatMap((method, methodIndex) =>
+    comparePairs.map(([levelA, levelB], pairIndex) => ({
+      method,
+      levelA,
+      levelB,
+      result: pairedDifferenceEvidenceFromDiffs(
+        matchedLevelDiffsForMethod(method, selectedTTestWithinCompareField, levelA, levelB),
+        70121 + methodIndex * 1009 + pairIndex * 97
+      ),
+    }))
+  );
+  const totalMatchedPairs = overallRows.reduce((sum, item) => sum + item.result.n, 0);
+
+  if (!totalMatchedPairs) {
+    document.querySelector("#tTestsWithinNote").innerHTML =
+      `<strong>No exact matched pairs were found</strong><span>The selected <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "variable"}</strong> levels do not create exact within-model matches under the current filters. This happens for <strong>Scenario</strong> in the current dataset because the scenario types do not share the same full ingredient set. Try <strong>Parameter set</strong>, <strong>History length</strong>, <strong>Expert role</strong>, or <strong>Demand model</strong> instead.</span>`;
+    document.querySelector("#tTestWithinOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No exact matched level pairs are available for the current variable, selected levels, and filters.</td></tr>`;
+    document.querySelector("#tTestWithinByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No split matched level pairs are available for the current variable, selected levels, and filters.</td></tr>`;
+    return;
+  }
+
+  document.querySelector("#tTestsWithinNote").innerHTML =
+    `<strong>${fmtInt(totalMatchedPairs)} matched level pairs for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "selected variable"}</strong> within <strong>${fmtInt(selectedMethods.length)}</strong> selected models. Mean differences are first level minus second level, so negative values favor the first level.</span>`;
+
+  document.querySelector("#tTestWithinOverallTable tbody").innerHTML = overallRows.length
+    ? overallRows.map(({ method, levelA, levelB, result }) => `
+        <tr>
+          <th>${modelMeta(method).short} · ${levelPairLabel(selectedTTestWithinCompareField, levelA, levelB)}</th>
+          <td>${fmtInt(result.n)}</td>
+          <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+          <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+          <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+        </tr>`).join("")
+    : `<tr><td colspan="5" class="quiet">No overall matched level t tests are available.</td></tr>`;
+
+  const splitRows = splitLevels.flatMap((splitLevel, splitIndex) =>
+    selectedMethods.flatMap((method, methodIndex) =>
+      comparePairs.map(([levelA, levelB], pairIndex) => ({
+        splitLevel,
+        method,
+        levelA,
+        levelB,
+        result: pairedDifferenceEvidenceFromDiffs(
+          matchedLevelDiffsForMethod(
+            method,
+            selectedTTestWithinCompareField,
+            levelA,
+            levelB,
+            selectedTTestWithinField,
+            splitLevel
+          ),
+          76121 + splitIndex * 4001 + methodIndex * 211 + pairIndex * 31
+        ),
+      }))
+    )
+  );
+
+  document.querySelector("#tTestWithinByLevelTable tbody").innerHTML = splitRows.length
+    ? splitRows.map(({ splitLevel, method, levelA, levelB, result }) => `
+        <tr>
+          <th>${displayLevel(splitLevel)}</th>
+          <td>${modelMeta(method).short} · ${levelPairLabel(selectedTTestWithinCompareField, levelA, levelB)}</td>
+          <td>${fmtInt(result.n)}</td>
+          <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+          <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+          <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+        </tr>`).join("")
+    : `<tr><td colspan="6" class="quiet">No split matched level t tests are available for the selected variable and levels.</td></tr>`;
+}
+
+function renderTTests() {
+  populateTTestControls();
+  const selectedMethods = selectedTTestMethodValues(undefined, selectedTTestMode === "levels" ? 1 : 2);
+  const activeFilters = activeTestFilterLabels();
+  const sourceCases = comparableCases(passesTestFilters);
+  const completed = completeCases(sourceCases);
+
+  document.querySelector("#caseCount").textContent = fmtInt(sourceCases.length);
+  document.querySelector("#completeCount").textContent = fmtInt(completed.length);
+  document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
+
+  const overallTitle = document.querySelector("#tTestOverallTitle");
+  const overallSubtitle = document.querySelector("#tTestOverallSubtitle");
+  const byLevelTitle = document.querySelector("#tTestByLevelTitle");
+  const byLevelSubtitle = document.querySelector("#tTestByLevelSubtitle");
+
+  if (selectedTTestMode === "levels") {
+    overallTitle.textContent = "Overall matched level t tests";
+    overallSubtitle.textContent = "Selected models compared across matched level pairs";
+    byLevelTitle.textContent = "Matched level t tests by split level";
+    byLevelSubtitle.textContent = "Mean differences are first level minus second level within the same model";
+
+    const compareLevels = selectedTTestCompareField
+      ? selectedTTestCompareLevelValues(selectedTTestCompareField, selectedMethods)
+      : [];
+    const splitLevels = selectedTTestField
+      ? selectedTTestSplitLevels(selectedTTestField, selectedMethods)
+      : [];
+
+    if (!selectedMethods.length || compareLevels.length < 2) {
+      document.querySelector("#tTestsNote").innerHTML =
+        `<strong>Select at least 1 model and 2 levels</strong><span>Choose one or more models, then select two or more compared levels to compute matched level t tests.</span>`;
+      document.querySelector("#tTestOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No matched level t tests are shown until at least one model and two compared levels are selected.</td></tr>`;
+      document.querySelector("#tTestByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No split matched level t tests are shown until at least one model and two compared levels are selected.</td></tr>`;
+      return;
+    }
+
+    const comparePairs = tTestPairs(compareLevels);
+    const overallRows = selectedMethods.flatMap((method, methodIndex) =>
+      comparePairs.map(([levelA, levelB], pairIndex) => ({
+        method,
+        levelA,
+        levelB,
+        result: pairedDifferenceEvidenceFromDiffs(
+          matchedLevelDiffsForMethod(method, selectedTTestCompareField, levelA, levelB),
+          70121 + methodIndex * 1009 + pairIndex * 97
+        ),
+      }))
+    );
+
+    document.querySelector("#tTestsNote").innerHTML =
+      `<strong>${fmtInt(overallRows.reduce((sum, item) => sum + item.result.n, 0))} matched level pairs for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${GROUP_OPTIONS[selectedTTestCompareField] || "selected variable"}</strong> within <strong>${fmtInt(selectedMethods.length)}</strong> selected models. Mean differences are first level minus second level, so negative values favor the first level.</span>`;
+
+    document.querySelector("#tTestOverallTable tbody").innerHTML = overallRows.length
+      ? overallRows.map(({ method, levelA, levelB, result }) => `
+          <tr>
+            <th>${modelMeta(method).short} · ${levelPairLabel(selectedTTestCompareField, levelA, levelB)}</th>
+            <td>${fmtInt(result.n)}</td>
+            <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+            <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+            <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="5" class="quiet">No overall matched level t tests are available.</td></tr>`;
+
+    const splitRows = splitLevels.flatMap((splitLevel, splitIndex) =>
+      selectedMethods.flatMap((method, methodIndex) =>
+        comparePairs.map(([levelA, levelB], pairIndex) => ({
+          splitLevel,
+          method,
+          levelA,
+          levelB,
+          result: pairedDifferenceEvidenceFromDiffs(
+            matchedLevelDiffsForMethod(method, selectedTTestCompareField, levelA, levelB, selectedTTestField, splitLevel),
+            76121 + splitIndex * 4001 + methodIndex * 211 + pairIndex * 31
+          ),
+        }))
+      )
+    );
+
+    document.querySelector("#tTestByLevelTable tbody").innerHTML = splitRows.length
+      ? splitRows.map(({ splitLevel, method, levelA, levelB, result }) => `
+          <tr>
+            <th>${displayLevel(splitLevel)}</th>
+            <td>${modelMeta(method).short} · ${levelPairLabel(selectedTTestCompareField, levelA, levelB)}</td>
+            <td>${fmtInt(result.n)}</td>
+            <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+            <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+            <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="6" class="quiet">No split matched level t tests are available for the selected variable and levels.</td></tr>`;
+    return;
+  }
+
+  overallTitle.textContent = "Overall pairwise t tests";
+  overallSubtitle.textContent = "Current across-model filters plus selected models";
+  byLevelTitle.textContent = "Pairwise t tests by level";
+  byLevelSubtitle.textContent = "Mean differences are first method minus second method";
+
+  const caseRows = tTestCasesForMethods(selectedMethods);
+
+  if (selectedMethods.length < 2) {
+    document.querySelector("#tTestsNote").innerHTML =
+      `<strong>Select at least 2 models</strong><span>Choose two or more models to compute pairwise t tests.</span>`;
+    document.querySelector("#tTestOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No pairwise t tests are shown until at least two models are selected.</td></tr>`;
+    document.querySelector("#tTestByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No level-based t tests are shown until at least two models are selected.</td></tr>`;
+    return;
+  }
+
+  const availableLevels = selectedTTestField ? availableTTestSplitLevels(selectedTTestField, selectedMethods) : [];
+  const selectedLevels = selectedTTestField ? selectedTTestSplitLevels(selectedTTestField, selectedMethods, availableLevels) : [];
+  const pairs = tTestPairs(selectedMethods);
+
+  document.querySelector("#tTestsNote").innerHTML =
+    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.</span>`;
+
+  const overallRows = pairs.map(([modelA, modelB], index) => ({
+    modelA,
+    modelB,
+    result: pairedEvidenceForMethods(caseRows, modelA, modelB, 55121 + index * 101),
+  }));
+
+  document.querySelector("#tTestOverallTable tbody").innerHTML = overallRows.length
+    ? overallRows.map(({ modelA, modelB, result }) => `
+        <tr>
+          <th>${pairLabel(modelA, modelB)}</th>
+          <td>${fmtInt(result.n)}</td>
+          <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+          <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+          <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+        </tr>`).join("")
+    : `<tr><td colspan="5" class="quiet">No overall t tests are available.</td></tr>`;
+
+  const levelRows = selectedLevels.flatMap((level, levelIndex) => {
+    const levelCases = caseRows.filter(item => levelValue(item[models[0]]?.[selectedTTestField]) === level);
+    return pairs.map(([modelA, modelB], pairIndex) => ({
+      level,
+      modelA,
+      modelB,
+      result: pairedEvidenceForMethods(levelCases, modelA, modelB, 61721 + levelIndex * 1009 + pairIndex * 97),
+    }));
+  });
+
+  document.querySelector("#tTestByLevelTable tbody").innerHTML = levelRows.length
+    ? levelRows.map(({ level, modelA, modelB, result }) => `
+        <tr>
+          <th>${displayLevel(level)}</th>
+          <td>${pairLabel(modelA, modelB)}</td>
+          <td>${fmtInt(result.n)}</td>
+          <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+          <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+          <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
+        </tr>`).join("")
+    : `<tr><td colspan="6" class="quiet">No level-based t tests are available for the selected variable and levels.</td></tr>`;
+}
+
 function renderOverview() {
   const cases = comparableCases(passesTestFilters);
   const completed = completeCases(cases);
@@ -2560,6 +3355,8 @@ function render() {
   if (selectedTab === "overview") renderOverview();
   if (selectedTab === "across") renderAcross();
   if (selectedTab === "tests") renderTests();
+  if (selectedTab === "tTestsAcross") renderAcrossTTests();
+  if (selectedTab === "tTestsWithin") renderWithinTTests();
   if (selectedTab === "withinTests") renderWithinTests();
   if (selectedTab === "within") renderWithin();
 }
@@ -2599,7 +3396,7 @@ document.addEventListener("click", event => {
   if (resetButton) {
     const field = resetButton.dataset.testFilterReset;
     delete selectedTestFilters[field];
-    renderTests();
+    render();
     return;
   }
 
@@ -2614,13 +3411,99 @@ document.querySelectorAll("[data-test-filter-list]").forEach(host => {
     if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
     const field = host.dataset.testFilterList;
     selectedTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
-    renderTests();
+    render();
   });
 });
 
 document.querySelector("#resetTestFilters").addEventListener("click", () => {
   selectedTestFilters = {};
-  renderTests();
+  render();
+});
+
+document.querySelector("#tTestAcrossModelList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedTTestModels = [...document.querySelectorAll("#tTestAcrossModelList input:checked")]
+    .map(input => input.value);
+  renderAcrossTTests();
+});
+
+document.querySelector("#tTestAcrossModelReset").addEventListener("click", () => {
+  selectedTTestModels = availableTTestMethods();
+  renderAcrossTTests();
+});
+
+document.querySelector("#tTestAcrossField").addEventListener("change", event => {
+  selectedTTestField = event.target.value;
+  selectedTTestLevels = [];
+  renderAcrossTTests();
+});
+
+document.querySelector("#tTestAcrossLevelList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedTTestLevels = [...document.querySelectorAll("#tTestAcrossLevelList input:checked")]
+    .map(input => input.value);
+  renderAcrossTTests();
+});
+
+document.querySelector("#tTestAcrossLevelReset").addEventListener("click", () => {
+  selectedTTestLevels = availableAcrossTTestLevels(selectedTTestField, selectedTTestModels);
+  renderAcrossTTests();
+});
+
+document.querySelector("#tTestWithinModelList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedTTestWithinModels = [...document.querySelectorAll("#tTestWithinModelList input:checked")]
+    .map(input => input.value);
+  renderWithinTTests();
+});
+
+document.querySelector("#tTestWithinModelReset").addEventListener("click", () => {
+  selectedTTestWithinModels = availableTTestMethods();
+  renderWithinTTests();
+});
+
+document.querySelector("#tTestWithinCompareField").addEventListener("change", event => {
+  selectedTTestWithinCompareField = event.target.value;
+  selectedTTestWithinCompareLevels = [];
+  selectedTTestWithinLevels = [];
+  renderWithinTTests();
+});
+
+document.querySelector("#tTestWithinCompareLevelList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedTTestWithinCompareLevels = [...document.querySelectorAll("#tTestWithinCompareLevelList input:checked")]
+    .map(input => input.value);
+  renderWithinTTests();
+});
+
+document.querySelector("#tTestWithinCompareLevelReset").addEventListener("click", () => {
+  selectedTTestWithinCompareLevels = availableTTestCompareLevels(
+    selectedTTestWithinCompareField,
+    selectedTTestWithinModels
+  );
+  renderWithinTTests();
+});
+
+document.querySelector("#tTestWithinField").addEventListener("change", event => {
+  selectedTTestWithinField = event.target.value;
+  selectedTTestWithinLevels = [];
+  renderWithinTTests();
+});
+
+document.querySelector("#tTestWithinLevelList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedTTestWithinLevels = [...document.querySelectorAll("#tTestWithinLevelList input:checked")]
+    .map(input => input.value);
+  renderWithinTTests();
+});
+
+document.querySelector("#tTestWithinLevelReset").addEventListener("click", () => {
+  selectedTTestWithinLevels = availableWithinTTestSplitLevels(
+    selectedTTestWithinField,
+    selectedTTestWithinModels,
+    selectedTTestWithinCompareField
+  );
+  renderWithinTTests();
 });
 
 document.querySelector("#withinTestModels").addEventListener("change", event => {

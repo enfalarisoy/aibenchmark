@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=20260819t">
+  <link rel="stylesheet" href="styles.css?v=20260820e">
 </head>
 <body>
   <header class="topbar">
@@ -24,6 +24,8 @@
       <button class="tab" data-tab="overview">Overview</button>
       <button class="tab active" data-tab="tests">Tests (Across Models)</button>
       <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
+      <button class="tab" data-tab="tTestsAcross">T Tests (Across Models)</button>
+      <button class="tab" data-tab="tTestsWithin">T Tests (Within Models)</button>
     </nav>
 
     <section id="overview" class="panel">
@@ -262,6 +264,19 @@
                 <button class="mini-button" data-test-filter-reset="history_length" type="button">Select all</button>
               </div>
               <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="history_length"></div>
+            </div>
+          </details>
+        </div>
+        <div class="multi-select-filter" data-test-filter-wrap="parameter_set">
+          <span class="multi-select-label">Parameter set (A/B/C)</span>
+          <details class="multi-select" data-test-filter-dropdown="parameter_set">
+            <summary class="multi-select-trigger" data-test-filter-summary="parameter_set">Loading…</summary>
+            <div class="multi-select-menu">
+              <div class="checkbox-filter-top">
+                <span class="checkbox-filter-summary" data-test-filter-menu-summary="parameter_set">Loading…</span>
+                <button class="mini-button" data-test-filter-reset="parameter_set" type="button">Select all</button>
+              </div>
+              <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-test-filter-list="parameter_set"></div>
             </div>
           </details>
         </div>
@@ -591,6 +606,155 @@
       <div class="within-test-panel-grid" id="withinTestPanels"></div>
     </section>
 
+    <section id="tTestsAcross" class="panel">
+      <div class="toolbar card" aria-label="Across-model t test controls">
+        <fieldset class="checkbox-filter">
+          <legend>Models</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="tTestAcrossModelSummary">Select 2 or more models</span>
+            <button id="tTestAcrossModelReset" class="mini-button" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list" id="tTestAcrossModelList"></div>
+        </fieldset>
+        <label>Split t tests by
+          <select id="tTestAcrossField"></select>
+        </label>
+        <fieldset class="checkbox-filter within-level-filter">
+          <legend>Included split levels</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="tTestAcrossLevelSummary">Select 1 or more levels</span>
+            <button id="tTestAcrossLevelReset" class="mini-button" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list" id="tTestAcrossLevelList"></div>
+        </fieldset>
+      </div>
+
+      <article class="comparison-note card" id="tTestsAcrossNote"></article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Overall pairwise t tests</h2>
+          <span>Current across-model filters plus selected models</span>
+        </div>
+        <div class="table-wrap">
+          <table id="tTestAcrossOverallTable">
+            <thead>
+              <tr>
+                <th>Comparison</th>
+                <th>N</th>
+                <th>Mean diff</th>
+                <th>T p-value</th>
+                <th>Bootstrap 95% CI</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Pairwise t tests by level</h2>
+          <span>Mean differences are first method minus second method</span>
+        </div>
+        <div class="table-wrap compact-table">
+          <table id="tTestAcrossByLevelTable">
+            <thead>
+              <tr>
+                <th>Level</th>
+                <th>Comparison</th>
+                <th>N</th>
+                <th>Mean diff</th>
+                <th>T p-value</th>
+                <th>Bootstrap 95% CI</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="tTestsWithin" class="panel">
+      <div class="toolbar card" aria-label="Within-model t test controls">
+        <fieldset class="checkbox-filter">
+          <legend>Models</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="tTestWithinModelSummary">Select 1 or more models</span>
+            <button id="tTestWithinModelReset" class="mini-button" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list" id="tTestWithinModelList"></div>
+        </fieldset>
+        <label>Compare levels from
+          <select id="tTestWithinCompareField"></select>
+        </label>
+        <fieldset class="checkbox-filter within-level-filter">
+          <legend>Compared levels</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="tTestWithinCompareLevelSummary">Select 2 or more levels</span>
+            <button id="tTestWithinCompareLevelReset" class="mini-button" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list" id="tTestWithinCompareLevelList"></div>
+        </fieldset>
+        <label>Split t tests by
+          <select id="tTestWithinField"></select>
+        </label>
+        <fieldset class="checkbox-filter within-level-filter">
+          <legend>Included split levels</legend>
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" id="tTestWithinLevelSummary">Select 1 or more levels</span>
+            <button id="tTestWithinLevelReset" class="mini-button" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list" id="tTestWithinLevelList"></div>
+        </fieldset>
+      </div>
+
+      <article class="comparison-note card" id="tTestsWithinNote"></article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Overall matched level t tests</h2>
+          <span>Selected models compared across matched level pairs</span>
+        </div>
+        <div class="table-wrap">
+          <table id="tTestWithinOverallTable">
+            <thead>
+              <tr>
+                <th>Comparison</th>
+                <th>N</th>
+                <th>Mean diff</th>
+                <th>T p-value</th>
+                <th>Bootstrap 95% CI</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Matched level t tests by split level</h2>
+          <span>Mean differences are first level minus second level within the same model</span>
+        </div>
+        <div class="table-wrap compact-table">
+          <table id="tTestWithinByLevelTable">
+            <thead>
+              <tr>
+                <th>Level</th>
+                <th>Comparison</th>
+                <th>N</th>
+                <th>Mean diff</th>
+                <th>T p-value</th>
+                <th>Bootstrap 95% CI</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
     <section id="within" class="panel" hidden>
       <div class="toolbar card" aria-label="Within-model controls">
         <label>Group cases by
@@ -605,8 +769,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>2.1.1</div>
+    <div>2.3</div>
   </footer>
-  <script src="app.js?v=20260819t"></script>
+  <script src="app.js?v=20260820g"></script>
 </body>
 </html>

@@ -1217,7 +1217,21 @@ function benchmarkInputColumns() {
   return payload.input_columns || Object.keys(GROUP_OPTIONS);
 }
 
-function withinMatchKey(row, varyingField, ignoredFields = []) {
+function withinMatchFieldValue(row, field, historyLengthMode = "exact") {
+  const rawValue = levelValue(row[field]);
+  if (field !== "history_length" || historyLengthMode !== "staticSeasonalMapped") return rawValue;
+  const historyAliases = {
+    "5": "short_history",
+    "7": "short_history",
+    "15": "medium_history",
+    "21": "medium_history",
+    "45": "long_history",
+    "63": "long_history",
+  };
+  return historyAliases[rawValue] || rawValue;
+}
+
+function withinMatchKey(row, varyingField, ignoredFields = [], historyLengthMode = "exact") {
   const linkedFields = varyingField === "dist_hint_applied" ? ["dist_hint"] : [];
   const derivedFields = varyingField === "parameter_set" ? ["instance_type", "closing", "p_star"] : [];
   return benchmarkInputColumns()
@@ -1229,21 +1243,33 @@ function withinMatchKey(row, varyingField, ignoredFields = []) {
       && field !== "variant"
       && field !== "instance_id"
     )
-    .map(field => levelValue(row[field]))
+    .map(field => withinMatchFieldValue(row, field, historyLengthMode))
     .join("|");
 }
 
-function withinTTestIgnoredFields(compareField, levelA, levelB) {
-  if (compareField !== "scenario_subtype") return [];
+function withinTTestMatchConfig(compareField, levelA, levelB) {
+  if (compareField !== "scenario_subtype") {
+    return {
+      ignoredFields: [],
+      historyLengthMode: "exact",
+    };
+  }
   const pair = new Set([levelValue(levelA), levelValue(levelB)]);
   if (pair.size === 2 && pair.has("seasonal") && pair.has("static")) {
-    return ["history_length", "has_environment", "next_env"];
+    return {
+      ignoredFields: ["has_environment", "next_env"],
+      historyLengthMode: "staticSeasonalMapped",
+    };
   }
-  return [];
+  return {
+    ignoredFields: [],
+    historyLengthMode: "exact",
+  };
 }
 
 function withinTTestUsesRelaxedScenarioMatch(compareField, levelA, levelB) {
-  return withinTTestIgnoredFields(compareField, levelA, levelB).length > 0;
+  const config = withinTTestMatchConfig(compareField, levelA, levelB);
+  return config.ignoredFields.length > 0 || config.historyLengthMode !== "exact";
 }
 
 function rebuildDerivedIndexes() {
@@ -2193,7 +2219,7 @@ function pairedEvidenceForMethods(caseRows, modelA, modelB, seed) {
 }
 
 function matchedLevelDiffsForMethod(method, compareField, levelA, levelB, splitField = "", splitLevel = "") {
-  const ignoredFields = withinTTestIgnoredFields(compareField, levelA, levelB);
+  const { ignoredFields, historyLengthMode } = withinTTestMatchConfig(compareField, levelA, levelB);
   const cacheKey = [
     method,
     compareField,
@@ -2202,6 +2228,7 @@ function matchedLevelDiffsForMethod(method, compareField, levelA, levelB, splitF
     splitField || "-",
     splitLevel || "-",
     ignoredFields.join(",") || "-",
+    historyLengthMode,
     tTestFilterSignature([compareField]),
   ].join("||");
   if (matchedLevelDiffCache.has(cacheKey)) return matchedLevelDiffCache.get(cacheKey);
@@ -2215,7 +2242,7 @@ function matchedLevelDiffsForMethod(method, compareField, levelA, levelB, splitF
 
   const byKey = new Map();
   sourceRows.forEach(row => {
-    const key = withinMatchKey(row, compareField, ignoredFields);
+    const key = withinMatchKey(row, compareField, ignoredFields, historyLengthMode);
     const compareLevel = levelValue(row[compareField]);
     const bucket = byKey.get(key) || new Map();
     if (!bucket.has(compareLevel)) bucket.set(compareLevel, row);
@@ -2487,14 +2514,14 @@ function renderWithinTTests() {
 
   if (!totalMatchedPairs) {
     document.querySelector("#tTestsWithinNote").innerHTML =
-      `<strong>No exact matched pairs were found</strong><span>The selected <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "variable"}</strong> levels do not create exact within-model matches under the current filters.${usesRelaxedScenarioMatch ? " For the <strong>seasonal vs static</strong> pair, the app already ignores <strong>history length</strong>, <strong>has environment</strong>, and <strong>next environment</strong>; if the count is still zero, the remaining filters or split selection remove the overlap." : " This happens for <strong>Scenario</strong> in the current dataset because the scenario types do not share the same full ingredient set. Try <strong>Parameter set</strong>, <strong>History length</strong>, <strong>Expert role</strong>, or <strong>Demand model</strong> instead."}</span>`;
+      `<strong>No exact matched pairs were found</strong><span>The selected <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "variable"}</strong> levels do not create exact within-model matches under the current filters.${usesRelaxedScenarioMatch ? " For the <strong>seasonal vs static</strong> pair, the app already maps <strong>5↔7</strong>, <strong>15↔21</strong>, and <strong>45↔63</strong>, while ignoring <strong>has environment</strong> and <strong>next environment</strong>; if the count is still zero, the remaining filters or split selection remove the overlap." : " This happens for <strong>Scenario</strong> in the current dataset because the scenario types do not share the same full ingredient set. Try <strong>Parameter set</strong>, <strong>History length</strong>, <strong>Expert role</strong>, or <strong>Demand model</strong> instead."}</span>`;
     document.querySelector("#tTestWithinOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No exact matched level pairs are available for the current variable, selected levels, and filters.</td></tr>`;
     document.querySelector("#tTestWithinByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No split matched level pairs are available for the current variable, selected levels, and filters.</td></tr>`;
     return;
   }
 
   document.querySelector("#tTestsWithinNote").innerHTML =
-    `<strong>${fmtInt(totalMatchedPairs)} matched level pairs for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "selected variable"}</strong> within <strong>${fmtInt(selectedMethods.length)}</strong> selected models. Mean differences are first level minus second level, so negative values favor the first level.${usesRelaxedScenarioMatch ? " For <strong>seasonal vs static</strong>, matching ignores <strong>history length</strong>, <strong>has environment</strong>, and <strong>next environment</strong> only." : ""}</span>`;
+    `<strong>${fmtInt(totalMatchedPairs)} matched level pairs for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "selected variable"}</strong> within <strong>${fmtInt(selectedMethods.length)}</strong> selected models. Mean differences are first level minus second level, so negative values favor the first level.${usesRelaxedScenarioMatch ? " For <strong>seasonal vs static</strong>, matching maps <strong>5↔7</strong>, <strong>15↔21</strong>, and <strong>45↔63</strong>, while ignoring <strong>has environment</strong> and <strong>next environment</strong> only." : ""}</span>`;
 
   document.querySelector("#tTestWithinOverallTable tbody").innerHTML = overallRows.length
     ? overallRows.map(({ method, levelA, levelB, result }) => `

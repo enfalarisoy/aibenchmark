@@ -685,27 +685,13 @@
           </div>
           <div class="checkbox-list" id="tTestWithinModelList"></div>
         </fieldset>
-        <label>Compare levels from
-          <select id="tTestWithinCompareField"></select>
-        </label>
         <fieldset class="checkbox-filter within-level-filter">
-          <legend>Compared levels</legend>
+          <legend>All filters</legend>
           <div class="checkbox-filter-top">
-            <span class="checkbox-filter-summary" id="tTestWithinCompareLevelSummary">Select 2 or more levels</span>
-            <button id="tTestWithinCompareLevelReset" class="mini-button" type="button">Select all</button>
+            <span class="checkbox-filter-summary" id="tTestWithinExtraFilterSummary">All filters available</span>
+            <button id="tTestWithinExtraFiltersReset" class="mini-button" type="button">Clear filters</button>
           </div>
-          <div class="checkbox-list" id="tTestWithinCompareLevelList"></div>
-        </fieldset>
-        <label>Split t tests by
-          <select id="tTestWithinField"></select>
-        </label>
-        <fieldset class="checkbox-filter within-level-filter">
-          <legend>Included split levels</legend>
-          <div class="checkbox-filter-top">
-            <span class="checkbox-filter-summary" id="tTestWithinLevelSummary">Select 1 or more levels</span>
-            <button id="tTestWithinLevelReset" class="mini-button" type="button">Select all</button>
-          </div>
-          <div class="checkbox-list" id="tTestWithinLevelList"></div>
+          <div class="within-extra-filter-grid" id="tTestWithinExtraFilters"></div>
         </fieldset>
       </div>
 
@@ -769,8 +755,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>3.0</div>
+    <div>3.2</div>
   </footer>
-  <script src="app.js?v=20260822a"></script>
+  <script src="app.js?v=20260822c"></script>
 </body>
 </html>

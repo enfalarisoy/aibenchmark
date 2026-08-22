@@ -6,6 +6,7 @@ let answeredRowsByModel = new Map();
 const withinFieldCache = new Map();
 const withinGroupSummaryCache = new Map();
 const tTestRowCache = new Map();
+const withinTTestRowCache = new Map();
 const withinTTestPairSummaryCache = new Map();
 const matchedLevelDiffCache = new Map();
 
@@ -28,10 +29,13 @@ let selectedTTestCompareLevels = [];
 let selectedTTestField = "demand_model";
 let selectedTTestLevels = [];
 let selectedTTestWithinModels = [];
-let selectedTTestWithinCompareField = "parameter_set";
-let selectedTTestWithinCompareLevels = [];
+let selectedTTestWithinCompareField = "scenario_subtype";
+let selectedTTestWithinCompareLevels = ["static", "seasonal"];
 let selectedTTestWithinField = "demand_model";
 let selectedTTestWithinLevels = [];
+let selectedWithinTTestFilters = {
+  scenario_subtype: ["static", "seasonal"],
+};
 
 const MODEL_META = {
   "GPT-5 mini": { colorClass: "model-gpt", short: "GPT" },
@@ -56,6 +60,7 @@ const GROUP_OPTIONS = {
   scenario_subtype: "Scenario",
   demand_model: "Demand model",
   history_length: "History length",
+  history_term: "History term",
   sigma: "Noise sigma",
   parameter_set: "Parameter set (A/B/C)",
   has_environment: "Has environment",
@@ -74,6 +79,7 @@ const TEST_FILTER_FIELDS = [
   "demand_model",
   "sigma",
   "history_length",
+  "history_term",
   "parameter_set",
   "next_env",
   "mc",
@@ -84,6 +90,7 @@ const TEST_FILTER_FIELDS = [
   "dist_hint_applied",
   "env_hint",
 ];
+const WITHIN_TTEST_FILTER_FIELDS = Object.keys(GROUP_OPTIONS);
 
 const WITHIN_ALL_LEVEL = "__all_levels__";
 const WITHIN_ALL_COMPARISONS = "__all_comparisons__";
@@ -91,6 +98,7 @@ const WITHIN_ALL_LEVEL_LABELS = {
   scenario_subtype: "All scenarios",
   demand_model: "All demand models",
   history_length: "All history lengths",
+  history_term: "All history terms",
   sigma: "All noise levels",
   parameter_set: "All parameter sets",
   has_environment: "All environment settings",
@@ -108,6 +116,7 @@ const FILTER_PLURAL_LABELS = {
   scenario_subtype: "scenarios",
   demand_model: "demand models",
   history_length: "history lengths",
+  history_term: "history terms",
   sigma: "noise levels",
   parameter_set: "parameter sets",
   has_environment: "environment settings",
@@ -233,10 +242,45 @@ function cacheKeyPart(values) {
   return values.length ? values.join(",") : "*";
 }
 
+function dropdownStateKey(dropdown) {
+  return dropdown?.dataset.testFilterDropdown
+    || dropdown?.dataset.withinTTestFilterDropdown
+    || "";
+}
+
+function captureOpenDropdownKeys() {
+  return [...document.querySelectorAll(".multi-select[open]")]
+    .map(dropdownStateKey)
+    .filter(Boolean);
+}
+
+function restoreOpenDropdownKeys(keys) {
+  if (!Array.isArray(keys) || !keys.length) return;
+  keys.forEach(key => {
+    const dropdown = document.querySelector(
+      `[data-test-filter-dropdown="${key}"], [data-within-t-test-filter-dropdown="${key}"]`
+    );
+    if (dropdown) dropdown.open = true;
+  });
+}
+
+function rerenderWithOpenDropdowns(renderer) {
+  const openKeys = captureOpenDropdownKeys();
+  renderer();
+  restoreOpenDropdownKeys(openKeys);
+}
+
 function tTestFilterSignature(excludedFields = []) {
   return TEST_FILTER_FIELDS
     .filter(field => !excludedFields.includes(field))
     .map(field => `${field}=${cacheKeyPart(selectedTestFilters[field] || [])}`)
+    .join("|");
+}
+
+function withinTTestFilterSignature(excludedFields = []) {
+  return WITHIN_TTEST_FILTER_FIELDS
+    .filter(field => !excludedFields.includes(field))
+    .map(field => `${field}=${cacheKeyPart(selectedWithinTTestFilters[field] || [])}`)
     .join("|");
 }
 
@@ -717,7 +761,13 @@ function uniqueSorted(field, sourceRows = rows) {
 }
 
 function sortLevelValues(values) {
+  const orderedTerms = ["short_term", "medium_term", "long_term"];
   return [...values].sort((a, b) => {
+    const termA = orderedTerms.indexOf(a);
+    const termB = orderedTerms.indexOf(b);
+    if (termA !== -1 && termB !== -1) return termA - termB;
+    if (termA !== -1) return -1;
+    if (termB !== -1) return 1;
     const na = Number(a);
     const nb = Number(b);
     if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
@@ -1021,7 +1071,7 @@ function tTestRowsForMethod(method, excludedFields = []) {
 }
 
 function withinTTestPairSummary(method, compareField) {
-  const cacheKey = [method, compareField, tTestFilterSignature([compareField])].join("||");
+  const cacheKey = ["global", method, compareField, tTestFilterSignature([compareField])].join("||");
   if (withinTTestPairSummaryCache.has(cacheKey)) return withinTTestPairSummaryCache.get(cacheKey);
 
   const sourceRows = tTestRowsForMethod(method, [compareField]);
@@ -1062,6 +1112,90 @@ function selectedTTestCompareLevelValues(field, methods, available = availableTT
   const validSelected = selectedTTestCompareLevels.filter(level => available.includes(level));
   selectedTTestCompareLevels = validSelected.length >= 2 ? validSelected : [...available];
   return selectedTTestCompareLevels;
+}
+
+function withinPanelTTestPairSummary(method, compareField) {
+  const cacheKey = ["within", method, compareField, withinTTestFilterSignature([compareField])].join("||");
+  if (withinTTestPairSummaryCache.has(cacheKey)) return withinTTestPairSummaryCache.get(cacheKey);
+
+  const sourceRows = withinTTestRowsForMethod(method, [compareField]);
+  const levelSet = new Set();
+
+  sourceRows.forEach(row => {
+    const compareLevel = levelValue(row[compareField]);
+    levelSet.add(compareLevel);
+  });
+
+  const summary = {
+    levels: sortLevelValues([...levelSet]),
+  };
+  withinTTestPairSummaryCache.set(cacheKey, summary);
+  return summary;
+}
+
+function availableWithinTTestCompareFields(methods) {
+  return Object.keys(GROUP_OPTIONS).filter(field => {
+    const summaries = methods.map(method => withinPanelTTestPairSummary(method, field));
+    return summaries.some(summary => summary.levels.length >= 2);
+  });
+}
+
+function availableWithinTTestCompareLevels(field, methods) {
+  return sortLevelValues(
+    [...new Set(methods.flatMap(method =>
+      withinPanelTTestPairSummary(method, field).levels
+    ))]
+  );
+}
+
+function syncWithinTTestComparedLevels(methods, availableLevels = availableWithinTTestCompareLevels(selectedTTestWithinCompareField, methods)) {
+  if (!availableLevels.length) {
+    selectedTTestWithinCompareLevels = [];
+    delete selectedWithinTTestFilters[selectedTTestWithinCompareField];
+    return selectedTTestWithinCompareLevels;
+  }
+
+  const currentFilter = selectedWithinTTestFilters[selectedTTestWithinCompareField];
+  const filterLevels = Array.isArray(currentFilter)
+    ? currentFilter.filter(level => availableLevels.includes(level))
+    : [];
+  if (!filterLevels.length && selectedTTestWithinCompareField === "scenario_subtype") {
+    const defaultScenarioLevels = ["static", "seasonal"].filter(level => availableLevels.includes(level));
+    if (defaultScenarioLevels.length >= 2) {
+      selectedTTestWithinCompareLevels = defaultScenarioLevels;
+      selectedWithinTTestFilters[selectedTTestWithinCompareField] = [...defaultScenarioLevels];
+      return selectedTTestWithinCompareLevels;
+    }
+  }
+  if (filterLevels.length) {
+    selectedTTestWithinCompareLevels = [...filterLevels];
+    selectedWithinTTestFilters[selectedTTestWithinCompareField] = [...filterLevels];
+    return selectedTTestWithinCompareLevels;
+  }
+
+  const validSelected = selectedTTestWithinCompareLevels.filter(level => availableLevels.includes(level));
+  selectedTTestWithinCompareLevels = validSelected.length ? validSelected : availableLevels.slice(0, Math.min(2, availableLevels.length));
+  selectedWithinTTestFilters[selectedTTestWithinCompareField] = [...selectedTTestWithinCompareLevels];
+  return selectedTTestWithinCompareLevels;
+}
+
+function syncWithinTTestSplitLevels(methods, compareField, splitField) {
+  const availableLevels = splitField
+    ? availableWithinTTestSplitLevels(splitField, methods, compareField)
+    : [];
+  if (!availableLevels.length) {
+    selectedTTestWithinLevels = [];
+    delete selectedWithinTTestFilters[splitField];
+    return selectedTTestWithinLevels;
+  }
+
+  const currentFilter = selectedWithinTTestFilters[splitField];
+  const filterLevels = Array.isArray(currentFilter)
+    ? currentFilter.filter(level => availableLevels.includes(level))
+    : [];
+  selectedTTestWithinLevels = filterLevels.length ? [...filterLevels] : [...availableLevels];
+  selectedWithinTTestFilters[splitField] = [...selectedTTestWithinLevels];
+  return selectedTTestWithinLevels;
 }
 
 function availableTTestSplitFields(methods) {
@@ -1213,27 +1347,91 @@ function activeTestFilterLabels() {
   });
 }
 
+function passesWithinTTestRowFilters(row, excludedFields = []) {
+  return WITHIN_TTEST_FILTER_FIELDS.every(field => {
+    if (excludedFields.includes(field)) return true;
+    const selected = selectedWithinTTestFilters[field];
+    if (!Array.isArray(selected)) return true;
+    if (!selected.length) return false;
+    return selected.includes(levelValue(row[field]));
+  });
+}
+
+function withinTTestRowsForMethod(method, excludedFields = []) {
+  const normalizedExcluded = [...excludedFields].sort();
+  const cacheKey = [method, normalizedExcluded.join(","), withinTTestFilterSignature(normalizedExcluded)].join("||");
+  if (withinTTestRowCache.has(cacheKey)) return withinTTestRowCache.get(cacheKey);
+
+  let result;
+  if (method === HEURISTIC_LABEL) {
+    const uniqueRows = new Map();
+    rows.forEach(row => {
+      if (!row.answered || !Number.isFinite(row.heuristic_rel_rev_loss)) return;
+      if (!passesWithinTTestRowFilters(row, normalizedExcluded)) return;
+      const key = caseRowIdentityKey(row);
+      if (!uniqueRows.has(key)) uniqueRows.set(key, row);
+    });
+    result = [...uniqueRows.values()];
+  } else {
+    result = rows.filter(row =>
+      row.model === method
+      && row.answered
+      && Number.isFinite(row.rel_rev_loss)
+      && passesWithinTTestRowFilters(row, normalizedExcluded)
+    );
+  }
+  withinTTestRowCache.set(cacheKey, result);
+  return result;
+}
+
+function availableWithinTTestFilterFields() {
+  return [...WITHIN_TTEST_FILTER_FIELDS];
+}
+
+function availableWithinTTestFilterValues(field, methods) {
+  return sortLevelValues(
+    [...new Set(methods.flatMap(method =>
+      withinTTestRowsForMethod(method, [field]).map(row => levelValue(row[field]))
+    ))]
+  );
+}
+
+function selectedWithinTTestFilterValues(field, methods, available = availableWithinTTestFilterValues(field, methods)) {
+  const current = selectedWithinTTestFilters[field];
+  if (!available.length) {
+    delete selectedWithinTTestFilters[field];
+    return [];
+  }
+  if (!Array.isArray(current)) {
+    selectedWithinTTestFilters[field] = [...available];
+    return selectedWithinTTestFilters[field];
+  }
+  const validSelected = current.filter(value => available.includes(value));
+  if (validSelected.length !== current.length) selectedWithinTTestFilters[field] = validSelected;
+  return selectedWithinTTestFilters[field];
+}
+
+function activeWithinTTestFilterLabels(methods) {
+  return availableWithinTTestFilterFields().flatMap(field => {
+    if (field === selectedTTestWithinCompareField) return [];
+    const available = availableWithinTTestFilterValues(field, methods);
+    const selected = selectedWithinTTestFilterValues(field, methods, available);
+    if (!available.length || selected.length === available.length) return [];
+    return [`${GROUP_OPTIONS[field]}: ${formatTestFilterSummary(field, available, selected)}`];
+  });
+}
+
 function benchmarkInputColumns() {
   return payload.input_columns || Object.keys(GROUP_OPTIONS);
 }
 
-function withinMatchFieldValue(row, field, historyLengthMode = "exact") {
-  const rawValue = levelValue(row[field]);
-  if (field !== "history_length" || historyLengthMode !== "staticSeasonalMapped") return rawValue;
-  const historyAliases = {
-    "5": "short_history",
-    "7": "short_history",
-    "15": "medium_history",
-    "21": "medium_history",
-    "45": "long_history",
-    "63": "long_history",
-  };
-  return historyAliases[rawValue] || rawValue;
-}
-
-function withinMatchKey(row, varyingField, ignoredFields = [], historyLengthMode = "exact") {
+function withinMatchKey(row, varyingField, ignoredFields = []) {
   const linkedFields = varyingField === "dist_hint_applied" ? ["dist_hint"] : [];
-  const derivedFields = varyingField === "parameter_set" ? ["instance_type", "closing", "p_star"] : [];
+  const derivedFields = [
+    ...(varyingField === "parameter_set" ? ["instance_type", "closing", "p_star"] : []),
+    ...(varyingField === "history_term" ? ["history_length"] : []),
+    ...(varyingField === "history_length" ? ["history_term"] : []),
+  ];
   return benchmarkInputColumns()
     .filter(field =>
       field !== varyingField
@@ -1243,7 +1441,7 @@ function withinMatchKey(row, varyingField, ignoredFields = [], historyLengthMode
       && field !== "variant"
       && field !== "instance_id"
     )
-    .map(field => withinMatchFieldValue(row, field, historyLengthMode))
+    .map(field => levelValue(row[field]))
     .join("|");
 }
 
@@ -1251,25 +1449,22 @@ function withinTTestMatchConfig(compareField, levelA, levelB) {
   if (compareField !== "scenario_subtype") {
     return {
       ignoredFields: [],
-      historyLengthMode: "exact",
     };
   }
   const pair = new Set([levelValue(levelA), levelValue(levelB)]);
   if (pair.size === 2 && pair.has("seasonal") && pair.has("static")) {
     return {
-      ignoredFields: ["has_environment", "next_env"],
-      historyLengthMode: "staticSeasonalMapped",
+      ignoredFields: ["history_length", "has_environment", "next_env"],
     };
   }
   return {
     ignoredFields: [],
-    historyLengthMode: "exact",
   };
 }
 
 function withinTTestUsesRelaxedScenarioMatch(compareField, levelA, levelB) {
   const config = withinTTestMatchConfig(compareField, levelA, levelB);
-  return config.ignoredFields.length > 0 || config.historyLengthMode !== "exact";
+  return config.ignoredFields.length > 0;
 }
 
 function rebuildDerivedIndexes() {
@@ -1282,6 +1477,7 @@ function rebuildDerivedIndexes() {
   withinFieldCache.clear();
   withinGroupSummaryCache.clear();
   tTestRowCache.clear();
+  withinTTestRowCache.clear();
   withinTTestPairSummaryCache.clear();
   matchedLevelDiffCache.clear();
 }
@@ -2219,7 +2415,7 @@ function pairedEvidenceForMethods(caseRows, modelA, modelB, seed) {
 }
 
 function matchedLevelDiffsForMethod(method, compareField, levelA, levelB, splitField = "", splitLevel = "") {
-  const { ignoredFields, historyLengthMode } = withinTTestMatchConfig(compareField, levelA, levelB);
+  const { ignoredFields } = withinTTestMatchConfig(compareField, levelA, levelB);
   const cacheKey = [
     method,
     compareField,
@@ -2228,12 +2424,11 @@ function matchedLevelDiffsForMethod(method, compareField, levelA, levelB, splitF
     splitField || "-",
     splitLevel || "-",
     ignoredFields.join(",") || "-",
-    historyLengthMode,
-    tTestFilterSignature([compareField]),
+    withinTTestFilterSignature([compareField]),
   ].join("||");
   if (matchedLevelDiffCache.has(cacheKey)) return matchedLevelDiffCache.get(cacheKey);
 
-  const sourceRows = tTestRowsForMethod(method, [compareField]).filter(row => {
+  const sourceRows = withinTTestRowsForMethod(method, [compareField]).filter(row => {
     const compareLevel = levelValue(row[compareField]);
     if (compareLevel !== levelA && compareLevel !== levelB) return false;
     if (splitField && splitLevel && levelValue(row[splitField]) !== splitLevel) return false;
@@ -2242,7 +2437,7 @@ function matchedLevelDiffsForMethod(method, compareField, levelA, levelB, splitF
 
   const byKey = new Map();
   sourceRows.forEach(row => {
-    const key = withinMatchKey(row, compareField, ignoredFields, historyLengthMode);
+    const key = withinMatchKey(row, compareField, ignoredFields);
     const compareLevel = levelValue(row[compareField]);
     const bucket = byKey.get(key) || new Map();
     if (!bucket.has(compareLevel)) bucket.set(compareLevel, row);
@@ -2280,9 +2475,85 @@ function availableAcrossTTestLevels(field, methods) {
 function availableWithinTTestSplitLevels(field, methods, compareField) {
   return sortLevelValues(
     [...new Set(methods.flatMap(method =>
-      tTestRowsForMethod(method, [compareField]).map(row => levelValue(row[field]))
+      withinTTestRowsForMethod(method, [compareField, field]).map(row => levelValue(row[field]))
     ))]
   );
+}
+
+function populateWithinTTestExtraFilterControls(methods) {
+  const host = document.querySelector("#tTestWithinExtraFilters");
+  const summary = document.querySelector("#tTestWithinExtraFilterSummary");
+  const fields = availableWithinTTestFilterFields();
+  const cards = [];
+  let activeCount = 0;
+
+  fields.forEach(field => {
+    const available = availableWithinTTestFilterValues(field, methods);
+    if (!available.length) {
+      delete selectedWithinTTestFilters[field];
+      return;
+    }
+
+    const selected = selectedWithinTTestFilterValues(field, methods, available);
+    if (field !== selectedTTestWithinCompareField && selected.length !== available.length) activeCount += 1;
+
+    const fieldFlags = [
+      field === selectedTTestWithinCompareField ? "comparison" : "",
+      field === selectedTTestWithinField ? "split" : "",
+    ].filter(Boolean);
+    const fieldSuffix = fieldFlags.length ? ` (${fieldFlags.join(" · ")})` : "";
+
+    cards.push(`
+      <div class="multi-select-filter" data-within-t-test-filter-wrap="${field}">
+        <label class="multi-select-label" for="withinTTestFilter-${field}">${GROUP_OPTIONS[field]}${fieldSuffix}</label>
+        <details class="multi-select" data-within-t-test-filter-dropdown="${field}">
+          <summary class="multi-select-trigger" id="withinTTestFilter-${field}">
+            <span data-within-t-test-filter-menu-summary="${field}">
+              ${selected.length === available.length
+                ? `${allFieldLabel(field)} selected`
+                : `${fmtInt(selected.length)} of ${fmtInt(available.length)} ${FILTER_PLURAL_LABELS[field] || "items"} selected`}
+            </span>
+          </summary>
+          <div class="multi-select-menu">
+            <div class="multi-select-menu-head">
+              <div class="multi-select-menu-title">${GROUP_OPTIONS[field]}${fieldSuffix}</div>
+              <div class="multi-select-menu-actions">
+                <button
+                  class="mini-button ${field === selectedTTestWithinCompareField ? "is-active" : ""}"
+                  type="button"
+                  data-within-t-test-compare-field="${field}"
+                >Comparison</button>
+                <button
+                  class="mini-button ${field === selectedTTestWithinField ? "is-active" : ""}"
+                  type="button"
+                  data-within-t-test-split-field="${field}"
+                >Split</button>
+                <button class="mini-button" type="button" data-within-t-test-filter-reset="${field}">Select all</button>
+              </div>
+            </div>
+            <div class="multi-select-menu-summary" data-within-t-test-filter-summary="${field}">
+              ${formatTestFilterSummary(field, available, selected)}
+            </div>
+            <div class="checkbox-list multi-select-checkbox-list" data-within-t-test-filter-list="${field}">
+              ${available.map(value => `
+                <label class="checkbox-chip">
+                  <input type="checkbox" value="${value}" ${selected.includes(value) ? "checked" : ""}>
+                  <span>${displayLevel(value)}</span>
+                </label>
+              `).join("")}
+            </div>
+          </div>
+        </details>
+      </div>
+    `);
+  });
+
+  host.innerHTML = cards.length
+    ? cards.join("")
+    : `<p class="quiet">No filters are available for the current model selection.</p>`;
+  summary.textContent = activeCount
+    ? `${fmtInt(activeCount)} additional filter${activeCount === 1 ? "" : "s"} applied`
+    : "All filters available";
 }
 
 function populateAcrossTTestControls() {
@@ -2348,66 +2619,35 @@ function populateWithinTTestControls() {
     ? `${fmtInt(selectedTTestWithinModels.length)} of ${fmtInt(availableMethods.length)} models selected`
     : "No models available";
 
-  const validCompareFields = availableTTestCompareFields(selectedTTestWithinModels);
+  const validCompareFields = availableWithinTTestCompareFields(selectedTTestWithinModels)
+    .filter(field => field !== selectedTTestWithinField);
   if (!validCompareFields.includes(selectedTTestWithinCompareField)) {
-    selectedTTestWithinCompareField = validCompareFields.includes("parameter_set")
-      ? "parameter_set"
+    selectedTTestWithinCompareField = validCompareFields.includes("scenario_subtype")
+      ? "scenario_subtype"
       : (validCompareFields[0] || "");
   }
-  const compareFieldPicker = document.querySelector("#tTestWithinCompareField");
-  compareFieldPicker.innerHTML = validCompareFields.length
-    ? validCompareFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
-    : `<option value="">No variables available</option>`;
-  compareFieldPicker.value = selectedTTestWithinCompareField;
-
-  const availableCompareLevels = selectedTTestWithinCompareField
-    ? availableTTestCompareLevels(selectedTTestWithinCompareField, selectedTTestWithinModels)
-    : [];
-  selectedTTestWithinCompareLevels = selectedValuesOrAll(selectedTTestWithinCompareLevels, availableCompareLevels, 2);
-  const compareLevelHost = document.querySelector("#tTestWithinCompareLevelList");
-  const compareLevelSummary = document.querySelector("#tTestWithinCompareLevelSummary");
-  compareLevelHost.innerHTML = availableCompareLevels.length
-    ? availableCompareLevels.map(level => `
-        <label class="checkbox-chip">
-          <input type="checkbox" value="${level}" ${selectedTTestWithinCompareLevels.includes(level) ? "checked" : ""}>
-          <span>${displayLevel(level)}</span>
-        </label>
-      `).join("")
-    : `<p class="quiet">No levels available.</p>`;
-  compareLevelSummary.textContent = availableCompareLevels.length
-    ? `${fmtInt(selectedTTestWithinCompareLevels.length)} of ${fmtInt(availableCompareLevels.length)} levels selected`
-    : "No levels available";
 
   const validSplitFields = Object.keys(GROUP_OPTIONS).filter(field =>
     field !== selectedTTestWithinCompareField
     && availableWithinTTestSplitLevels(field, selectedTTestWithinModels, selectedTTestWithinCompareField).length
   );
   if (!validSplitFields.includes(selectedTTestWithinField)) {
-    selectedTTestWithinField = validSplitFields[0] || "";
+    selectedTTestWithinField = validSplitFields.includes("demand_model")
+      ? "demand_model"
+      : (validSplitFields[0] || "");
   }
-  const splitFieldPicker = document.querySelector("#tTestWithinField");
-  splitFieldPicker.innerHTML = validSplitFields.length
-    ? validSplitFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
-    : `<option value="">No variables available</option>`;
-  splitFieldPicker.value = selectedTTestWithinField;
 
-  const availableSplitLevels = selectedTTestWithinField
-    ? availableWithinTTestSplitLevels(selectedTTestWithinField, selectedTTestWithinModels, selectedTTestWithinCompareField)
+  populateWithinTTestExtraFilterControls(selectedTTestWithinModels);
+
+  const availableCompareLevels = selectedTTestWithinCompareField
+    ? availableWithinTTestCompareLevels(selectedTTestWithinCompareField, selectedTTestWithinModels)
     : [];
-  selectedTTestWithinLevels = selectedValuesOrAll(selectedTTestWithinLevels, availableSplitLevels, 1);
-  const splitLevelHost = document.querySelector("#tTestWithinLevelList");
-  const splitLevelSummary = document.querySelector("#tTestWithinLevelSummary");
-  splitLevelHost.innerHTML = availableSplitLevels.length
-    ? availableSplitLevels.map(level => `
-        <label class="checkbox-chip">
-          <input type="checkbox" value="${level}" ${selectedTTestWithinLevels.includes(level) ? "checked" : ""}>
-          <span>${displayLevel(level)}</span>
-        </label>
-      `).join("")
-    : `<p class="quiet">No levels available.</p>`;
-  splitLevelSummary.textContent = availableSplitLevels.length
-    ? `${fmtInt(selectedTTestWithinLevels.length)} of ${fmtInt(availableSplitLevels.length)} levels selected`
-    : "No levels available";
+  selectedTTestWithinCompareLevels = syncWithinTTestComparedLevels(selectedTTestWithinModels, availableCompareLevels);
+  selectedTTestWithinLevels = syncWithinTTestSplitLevels(
+    selectedTTestWithinModels,
+    selectedTTestWithinCompareField,
+    selectedTTestWithinField
+  );
 }
 
 function renderAcrossTTests() {
@@ -2477,9 +2717,9 @@ function renderAcrossTTests() {
 function renderWithinTTests() {
   populateWithinTTestControls();
   const selectedMethods = selectedTTestWithinModels;
-  const sourceCases = comparableCases(passesTestFilters);
+  const sourceCases = comparableCases(row => passesWithinTTestRowFilters(row));
   const completed = completeCases(sourceCases);
-  const activeFilters = activeTestFilterLabels();
+  const activeFilters = activeWithinTTestFilterLabels(selectedMethods);
   const compareLevels = selectedTTestWithinCompareLevels;
   const splitLevels = selectedTTestWithinLevels;
   const comparePairs = tTestPairs(compareLevels);
@@ -2493,7 +2733,7 @@ function renderWithinTTests() {
 
   if (!selectedMethods.length || compareLevels.length < 2) {
     document.querySelector("#tTestsWithinNote").innerHTML =
-      `<strong>Select at least 1 model and 2 levels</strong><span>Choose one or more models, then select two or more compared levels to compute matched level t tests.</span>`;
+      `<strong>Select at least 1 model and 2 levels</strong><span>Choose one or more models, then select two or more levels inside <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "the comparison filter"}</strong> in <strong>All filters</strong> to compute matched level t tests.</span>`;
     document.querySelector("#tTestWithinOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No matched level t tests are shown until at least one model and two compared levels are selected.</td></tr>`;
     document.querySelector("#tTestWithinByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No split matched level t tests are shown until at least one model and two compared levels are selected.</td></tr>`;
     return;
@@ -2514,14 +2754,14 @@ function renderWithinTTests() {
 
   if (!totalMatchedPairs) {
     document.querySelector("#tTestsWithinNote").innerHTML =
-      `<strong>No exact matched pairs were found</strong><span>The selected <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "variable"}</strong> levels do not create exact within-model matches under the current filters.${usesRelaxedScenarioMatch ? " For the <strong>seasonal vs static</strong> pair, the app already maps <strong>5↔7</strong>, <strong>15↔21</strong>, and <strong>45↔63</strong>, while ignoring <strong>has environment</strong> and <strong>next environment</strong>; if the count is still zero, the remaining filters or split selection remove the overlap." : " This happens for <strong>Scenario</strong> in the current dataset because the scenario types do not share the same full ingredient set. Try <strong>Parameter set</strong>, <strong>History length</strong>, <strong>Expert role</strong>, or <strong>Demand model</strong> instead."}</span>`;
+      `<strong>No exact matched pairs were found</strong><span>The selected <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "variable"}</strong> levels do not create exact within-model matches under the current filters.${activeFilters.length ? ` ${activeFilters.join(" · ")}.` : " No extra filters are applied."}${usesRelaxedScenarioMatch ? " For the <strong>seasonal vs static</strong> pair, the app now uses the shared <strong>history term</strong> field while ignoring raw <strong>history length</strong>, <strong>has environment</strong>, and <strong>next environment</strong>; if the count is still zero, the remaining filters or split selection remove the overlap." : " This happens for <strong>Scenario</strong> in the current dataset because the scenario types do not share the same full ingredient set. Try <strong>Parameter set</strong>, <strong>History term</strong>, <strong>Expert role</strong>, or <strong>Demand model</strong> instead."}</span>`;
     document.querySelector("#tTestWithinOverallTable tbody").innerHTML = `<tr><td colspan="5" class="quiet">No exact matched level pairs are available for the current variable, selected levels, and filters.</td></tr>`;
     document.querySelector("#tTestWithinByLevelTable tbody").innerHTML = `<tr><td colspan="6" class="quiet">No split matched level pairs are available for the current variable, selected levels, and filters.</td></tr>`;
     return;
   }
 
   document.querySelector("#tTestsWithinNote").innerHTML =
-    `<strong>${fmtInt(totalMatchedPairs)} matched level pairs for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "selected variable"}</strong> within <strong>${fmtInt(selectedMethods.length)}</strong> selected models. Mean differences are first level minus second level, so negative values favor the first level.${usesRelaxedScenarioMatch ? " For <strong>seasonal vs static</strong>, matching maps <strong>5↔7</strong>, <strong>15↔21</strong>, and <strong>45↔63</strong>, while ignoring <strong>has environment</strong> and <strong>next environment</strong> only." : ""}</span>`;
+    `<strong>${fmtInt(totalMatchedPairs)} matched level pairs for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "No additional filters applied"}. Comparing <strong>${GROUP_OPTIONS[selectedTTestWithinCompareField] || "selected variable"}</strong> within <strong>${fmtInt(selectedMethods.length)}</strong> selected models and splitting results by <strong>${GROUP_OPTIONS[selectedTTestWithinField] || "selected split"}</strong>. Mean differences are first level minus second level, so negative values favor the first level.${usesRelaxedScenarioMatch ? " For <strong>seasonal vs static</strong>, matching now uses <strong>history term</strong> and ignores raw <strong>history length</strong>, <strong>has environment</strong>, and <strong>next environment</strong> only." : ""}</span>`;
 
   document.querySelector("#tTestWithinOverallTable tbody").innerHTML = overallRows.length
     ? overallRows.map(({ method, levelA, levelB, result }) => `
@@ -3441,8 +3681,10 @@ document.addEventListener("click", event => {
   const resetButton = event.target.closest("[data-test-filter-reset]");
   if (resetButton) {
     const field = resetButton.dataset.testFilterReset;
-    delete selectedTestFilters[field];
-    render();
+    const available = availableTestFilterValues(field);
+    const selected = selectedTestFilterValues(field, available);
+    selectedTestFilters[field] = selected.length === available.length ? [] : [...available];
+    rerenderWithOpenDropdowns(render);
     return;
   }
 
@@ -3457,7 +3699,7 @@ document.querySelectorAll("[data-test-filter-list]").forEach(host => {
     if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
     const field = host.dataset.testFilterList;
     selectedTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
-    render();
+    rerenderWithOpenDropdowns(render);
   });
 });
 
@@ -3508,47 +3750,62 @@ document.querySelector("#tTestWithinModelReset").addEventListener("click", () =>
   renderWithinTTests();
 });
 
-document.querySelector("#tTestWithinCompareField").addEventListener("change", event => {
-  selectedTTestWithinCompareField = event.target.value;
-  selectedTTestWithinCompareLevels = [];
+document.addEventListener("click", event => {
+  const compareButton = event.target.closest("[data-within-t-test-compare-field]");
+  if (compareButton) {
+    const field = compareButton.dataset.withinTTestCompareField;
+    if (field && field !== selectedTTestWithinField) {
+      selectedTTestWithinCompareField = field;
+      selectedTTestWithinCompareLevels = [];
+      rerenderWithOpenDropdowns(renderWithinTTests);
+    }
+    return;
+  }
+
+  const splitButton = event.target.closest("[data-within-t-test-split-field]");
+  if (splitButton) {
+    const field = splitButton.dataset.withinTTestSplitField;
+    if (field && field !== selectedTTestWithinCompareField) {
+      selectedTTestWithinField = field;
+      selectedTTestWithinLevels = [];
+      rerenderWithOpenDropdowns(renderWithinTTests);
+    }
+    return;
+  }
+
+  const resetButton = event.target.closest("[data-within-t-test-filter-reset]");
+  if (!resetButton) return;
+  const field = resetButton.dataset.withinTTestFilterReset;
+  const available = availableWithinTTestFilterValues(field, selectedTTestWithinModels);
+  const selected = selectedWithinTTestFilterValues(field, selectedTTestWithinModels, available);
+  selectedWithinTTestFilters[field] = selected.length === available.length ? [] : [...available];
+  if (field === selectedTTestWithinCompareField) selectedTTestWithinCompareLevels = [...selectedWithinTTestFilters[field]];
+  if (field === selectedTTestWithinField) selectedTTestWithinLevels = [...selectedWithinTTestFilters[field]];
+  rerenderWithOpenDropdowns(renderWithinTTests);
+});
+
+document.addEventListener("change", event => {
+  const host = event.target.closest("[data-within-t-test-filter-list]");
+  if (!host || !(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  const field = host.dataset.withinTTestFilterList;
+  selectedWithinTTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
+  if (field === selectedTTestWithinCompareField) {
+    selectedTTestWithinCompareLevels = [...selectedWithinTTestFilters[field]];
+  }
+  if (field === selectedTTestWithinField) {
+    selectedTTestWithinLevels = [...selectedWithinTTestFilters[field]];
+  }
+  rerenderWithOpenDropdowns(renderWithinTTests);
+});
+
+document.querySelector("#tTestWithinExtraFiltersReset").addEventListener("click", () => {
+  selectedTTestWithinCompareField = "scenario_subtype";
+  selectedTTestWithinCompareLevels = ["static", "seasonal"];
+  selectedTTestWithinField = "demand_model";
   selectedTTestWithinLevels = [];
-  renderWithinTTests();
-});
-
-document.querySelector("#tTestWithinCompareLevelList").addEventListener("change", event => {
-  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
-  selectedTTestWithinCompareLevels = [...document.querySelectorAll("#tTestWithinCompareLevelList input:checked")]
-    .map(input => input.value);
-  renderWithinTTests();
-});
-
-document.querySelector("#tTestWithinCompareLevelReset").addEventListener("click", () => {
-  selectedTTestWithinCompareLevels = availableTTestCompareLevels(
-    selectedTTestWithinCompareField,
-    selectedTTestWithinModels
-  );
-  renderWithinTTests();
-});
-
-document.querySelector("#tTestWithinField").addEventListener("change", event => {
-  selectedTTestWithinField = event.target.value;
-  selectedTTestWithinLevels = [];
-  renderWithinTTests();
-});
-
-document.querySelector("#tTestWithinLevelList").addEventListener("change", event => {
-  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
-  selectedTTestWithinLevels = [...document.querySelectorAll("#tTestWithinLevelList input:checked")]
-    .map(input => input.value);
-  renderWithinTTests();
-});
-
-document.querySelector("#tTestWithinLevelReset").addEventListener("click", () => {
-  selectedTTestWithinLevels = availableWithinTTestSplitLevels(
-    selectedTTestWithinField,
-    selectedTTestWithinModels,
-    selectedTTestWithinCompareField
-  );
+  selectedWithinTTestFilters = {
+    scenario_subtype: ["static", "seasonal"],
+  };
   renderWithinTTests();
 });
 

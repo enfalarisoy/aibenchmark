@@ -3100,6 +3100,8 @@ function renderOverview() {
   const overviewMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
   const regressionItems = regressionResultsForOverview();
   const regressionTotal = regressionResultsById.size;
+  const overviewSimilarPricingTableBody = document.querySelector("#overviewSimilarPricingTable tbody");
+  const overviewOverPricingTableBody = document.querySelector("#overviewOverPricingTable tbody");
   const regressionNoteEl = document.querySelector("#overviewRegressionNote");
   const regressionKpisEl = document.querySelector("#overviewRegressionKpis");
   const regressionWorstTableBody = document.querySelector("#overviewRegressionWorstTable tbody");
@@ -3166,6 +3168,8 @@ function renderOverview() {
 
   const caseMetricSummaries = overviewMethods.map(model => {
     const losses = benchmarkLosses(benchmarkCompleted, model);
+    const directionRows = benchmarkCompleted.map(caseRows => caseRows[model]).filter(Boolean);
+    const directions = directionSummary(directionRows);
     return {
       model,
       caseCount: losses.length,
@@ -3173,6 +3177,10 @@ function renderOverview() {
       nearOptimalRate: shareWhere(losses, value => value <= NEAR_OPTIMAL_THRESHOLD),
       severeLossCount: losses.filter(value => value >= SEVERE_LOSS_THRESHOLD).length,
       severeLossRate: shareWhere(losses, value => value >= SEVERE_LOSS_THRESHOLD),
+      similarPricingCount: directions.similar,
+      similarPricingRate: directions.total ? directions.similar / directions.total : NaN,
+      overPricingCount: directions.over,
+      overPricingRate: directions.total ? directions.over / directions.total : NaN,
     };
   }).filter(item => item.caseCount);
 
@@ -3211,6 +3219,46 @@ function renderOverview() {
           <td>${fmtInt(item.caseCount)}</td>
         </tr>`).join("")
     : `<tr><td colspan="5" class="quiet">No severe-loss leaderboard is available for the current filters.</td></tr>`;
+
+  const similarPricingRanked = [...caseMetricSummaries]
+    .sort((a, b) =>
+      b.similarPricingCount - a.similarPricingCount
+        || b.similarPricingRate - a.similarPricingRate
+        || a.model.localeCompare(b.model)
+    );
+
+  if (overviewSimilarPricingTableBody) {
+    overviewSimilarPricingTableBody.innerHTML = similarPricingRanked.length
+      ? similarPricingRanked.map((item, index) => `
+          <tr>
+            <th>${index + 1}</th>
+            <td class="${index === 0 ? "winner-cell" : ""}">${item.model}</td>
+            <td class="${index === 0 ? "winner-cell" : ""}">${fmtInt(item.similarPricingCount)}</td>
+            <td>${fmtPct(item.similarPricingRate)}</td>
+            <td>${fmtInt(item.caseCount)}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="5" class="quiet">No similar-pricing leaderboard is available for the current filters.</td></tr>`;
+  }
+
+  const overPricingRanked = [...caseMetricSummaries]
+    .sort((a, b) =>
+      a.overPricingCount - b.overPricingCount
+        || a.overPricingRate - b.overPricingRate
+        || a.model.localeCompare(b.model)
+    );
+
+  if (overviewOverPricingTableBody) {
+    overviewOverPricingTableBody.innerHTML = overPricingRanked.length
+      ? overPricingRanked.map((item, index) => `
+          <tr>
+            <th>${index + 1}</th>
+            <td class="${index === 0 ? "winner-cell" : ""}">${item.model}</td>
+            <td class="${index === 0 ? "winner-cell" : ""}">${fmtInt(item.overPricingCount)}</td>
+            <td>${fmtPct(item.overPricingRate)}</td>
+            <td>${fmtInt(item.caseCount)}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="5" class="quiet">No over-pricing leaderboard is available for the current filters.</td></tr>`;
+  }
 
   const meanRSquared = mean(regressionItems.map(item => item.r_squared).filter(Number.isFinite));
   const meanAbsPriceGap = mean(regressionItems.map(item => Math.abs(item.price_pct_gap)).filter(Number.isFinite));

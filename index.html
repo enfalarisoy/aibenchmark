@@ -115,6 +115,50 @@
         </article>
       </div>
 
+      <div class="grid two">
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Similar-pricing leaderboard</h2>
+            <span>Most cases within +/-5% of the optimal price</span>
+          </div>
+          <div class="table-wrap">
+            <table id="overviewSimilarPricingTable">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Model</th>
+                  <th>Similar-price cases</th>
+                  <th>Share</th>
+                  <th>Compared cases</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Over-pricing leaderboard</h2>
+            <span>Fewest cases priced more than 5% above the optimum</span>
+          </div>
+          <div class="table-wrap">
+            <table id="overviewOverPricingTable">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Model</th>
+                  <th>Over-price cases</th>
+                  <th>Share</th>
+                  <th>Compared cases</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
       <article class="comparison-note card" id="overviewRegressionNote"></article>
 
       <div class="kpi-grid" id="overviewRegressionKpis"></div>
@@ -845,8 +889,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>4.0</div>
+    <div>4.1</div>
   </footer>
-  <script src="app.js?v=20260828c"></script>
+  <script src="app.js?v=20260828d"></script>
 </body>
 </html>

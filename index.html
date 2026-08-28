@@ -115,7 +115,28 @@
         </article>
       </div>
 
-      <div class="grid two">
+      <div class="grid three">
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Under-pricing leaderboard</h2>
+            <span>Fewest cases priced more than 5% below the optimum</span>
+          </div>
+          <div class="table-wrap">
+            <table id="overviewUnderPricingTable">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Model</th>
+                  <th>Under-price cases</th>
+                  <th>Share</th>
+                  <th>Compared cases</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
         <article class="card table-card">
           <div class="card-heading">
             <h2>Similar-pricing leaderboard</h2>
@@ -158,6 +179,39 @@
           </div>
         </article>
       </div>
+
+      <article class="comparison-note card" id="overviewStaticNote"></article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Static across-method performance</h2>
+          <span>Filtered static benchmark cases only, including regression</span>
+        </div>
+        <div class="table-wrap">
+          <table id="overviewStaticModelTable">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Model</th>
+                <th>Mean loss</th>
+                <th>Near-optimal</th>
+                <th>Severe-loss</th>
+                <th>Case points</th>
+                <th>Compared cases</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Static mean revenue loss across methods</h2>
+          <span>Shared static cases for GPT, Gemini, Claude, Heuristic, and Regression</span>
+        </div>
+        <div id="overviewStaticLeaderboardChart" class="pair-mean-grid"></div>
+      </article>
 
       <article class="comparison-note card" id="overviewRegressionNote"></article>
 
@@ -232,6 +286,32 @@
                 <th>P_hat</th>
                 <th>P_star</th>
                 <th>Price gap</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Static regression closest revenue-hat to revenue-star</h2>
+          <span>Filtered static instances ranked by smallest absolute revenue gap</span>
+        </div>
+        <div class="table-wrap compact-table">
+          <table id="overviewRegressionRevenueTable">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Instance</th>
+                <th>Demand model</th>
+                <th>Parameter set</th>
+                <th>Sigma</th>
+                <th>History</th>
+                <th>MC</th>
+                <th>Revenue_hat</th>
+                <th>Revenue_star</th>
+                <th>Revenue gap</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -889,8 +969,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>4.1</div>
+    <div>4.2</div>
   </footer>
-  <script src="app.js?v=20260828d"></script>
+  <script src="app.js?v=20260829b"></script>
 </body>
 </html>

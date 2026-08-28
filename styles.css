@@ -9,6 +9,7 @@
   --gemini: #16846f;
   --claude: #a05a22;
   --heuristic: #5c6470;
+  --regression: #7c3aed;
   --tie: #6d7280;
   --shadow: 0 8px 24px rgba(33, 42, 50, .07);
 }
@@ -489,6 +490,10 @@ input[type="search"]::placeholder {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .model-panel-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -655,6 +660,8 @@ input[type="search"]::placeholder {
 .model-gpt { background: var(--gpt); }
 .model-gemini { background: var(--gemini); }
 .model-claude { background: var(--claude); }
+.model-heuristic { background: var(--heuristic); }
+.model-regression { background: var(--regression); }
 .model-tie,
 .model-fallback { background: var(--tie); }
 .bar-fill.pair-one { background: #5b5fc7; }
@@ -665,6 +672,7 @@ svg .model-gpt { fill: var(--gpt); }
 svg .model-gemini { fill: var(--gemini); }
 svg .model-claude { fill: var(--claude); }
 svg .model-heuristic { fill: var(--heuristic); }
+svg .model-regression { fill: var(--regression); }
 svg .model-tie,
 svg .model-fallback { fill: var(--tie); }
 
@@ -742,6 +750,7 @@ svg .model-fallback { fill: var(--tie); }
 .level-mean-chart .model-gemini,
 .level-mean-chart .model-claude,
 .level-mean-chart .model-heuristic,
+.level-mean-chart .model-regression,
 .level-mean-chart .pair-one,
 .level-mean-chart .pair-two,
 .level-mean-chart .pair-three,
@@ -749,6 +758,7 @@ svg .model-fallback { fill: var(--tie); }
 .pair-mean-chart .model-gemini,
 .pair-mean-chart .model-claude,
 .pair-mean-chart .model-heuristic,
+.pair-mean-chart .model-regression,
 .pair-mean-chart .pair-one,
 .pair-mean-chart .pair-two,
 .pair-mean-chart .pair-three {
@@ -777,7 +787,9 @@ svg .model-fallback { fill: var(--tie); }
 
 .level-mean-chart .model-heuristic,
 .pair-mean-chart .model-heuristic { fill: var(--heuristic); }
-}
+
+.level-mean-chart .model-regression,
+.pair-mean-chart .model-regression { fill: var(--regression); }
 
 .within-all-model-grid {
   display: grid;
@@ -987,6 +999,8 @@ svg .model-fallback { fill: var(--tie); }
 .cdf-plot .model-claude { stroke: var(--claude); }
 .density-plot .model-heuristic,
 .cdf-plot .model-heuristic { stroke: var(--heuristic); }
+.density-plot .model-regression,
+.cdf-plot .model-regression { stroke: var(--regression); }
 .density-plot .model-fallback,
 .cdf-plot .model-fallback { stroke: var(--tie); }
 
@@ -1018,6 +1032,7 @@ svg .model-fallback { fill: var(--tie); }
 .density-plot .quartile-inset .quartile-marker.model-gemini { fill: var(--gemini); }
 .density-plot .quartile-inset .quartile-marker.model-claude { fill: var(--claude); }
 .density-plot .quartile-inset .quartile-marker.model-heuristic { fill: var(--heuristic); }
+.density-plot .quartile-inset .quartile-marker.model-regression { fill: var(--regression); }
 
 .density-plot .quartile-inset text {
   fill: var(--ink);
@@ -1139,6 +1154,7 @@ footer {
 
   .kpi-grid,
   .grid.two,
+  .grid.three,
   .model-panel-grid,
   .distribution-mean-grid {
     grid-template-columns: 1fr 1fr;
@@ -1165,6 +1181,7 @@ footer {
   .toolbar,
   .kpi-grid,
   .grid.two,
+  .grid.three,
   .model-panel-grid,
   .distribution-mean-grid {
     grid-template-columns: 1fr;

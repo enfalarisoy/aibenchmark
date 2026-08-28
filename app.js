@@ -44,9 +44,11 @@ const MODEL_META = {
   "Gemini 2.5 Flash": { colorClass: "model-gemini", short: "Gemini" },
   "Claude Haiku 4.5": { colorClass: "model-claude", short: "Claude" },
   "Heuristic": { colorClass: "model-heuristic", short: "Heuristic" },
+  "Regression": { colorClass: "model-regression", short: "Regression" },
 };
 
 const HEURISTIC_LABEL = "Heuristic";
+const REGRESSION_LABEL = "Regression";
 const ACROSS_CHART_ORDER = ["Gemini 2.5 Flash", "Claude Haiku 4.5", "GPT-5 mini", HEURISTIC_LABEL];
 const PRICE_DIRECTION_TOLERANCE = 0.05;
 const NEAR_OPTIMAL_THRESHOLD = 0.05;
@@ -231,8 +233,17 @@ function heuristicLoss(caseRows) {
   return sourceRow ? sourceRow.heuristic_rel_rev_loss : NaN;
 }
 
+function regressionLoss(caseRows) {
+  const sourceRow = Object.values(caseRows).find(row => row?.instance_id);
+  const regression = sourceRow?.instance_id ? regressionResultsById.get(sourceRow.instance_id) : null;
+  return regression && Number.isFinite(regression.revenue_pct_gap)
+    ? Math.abs(regression.revenue_pct_gap)
+    : NaN;
+}
+
 function benchmarkLoss(caseRows, method) {
   if (method === HEURISTIC_LABEL) return heuristicLoss(caseRows);
+  if (method === REGRESSION_LABEL) return regressionLoss(caseRows);
   return caseRows[method]?.rel_rev_loss;
 }
 
@@ -446,6 +457,20 @@ function priceDirection(row) {
   if (relativeDeviation < -PRICE_DIRECTION_TOLERANCE) return "under";
   if (relativeDeviation > PRICE_DIRECTION_TOLERANCE) return "over";
   return "similar";
+}
+
+function benchmarkPriceDirection(caseRows, method) {
+  if (method === HEURISTIC_LABEL) {
+    const sourceRow = Object.values(caseRows).find(row =>
+      row?.answered && Number.isFinite(row?.heuristic_price) && Number.isFinite(row?.p_star)
+    );
+    if (!sourceRow || sourceRow.p_star === 0) return null;
+    const relativeDeviation = (sourceRow.heuristic_price - sourceRow.p_star) / sourceRow.p_star;
+    if (relativeDeviation < -PRICE_DIRECTION_TOLERANCE) return "under";
+    if (relativeDeviation > PRICE_DIRECTION_TOLERANCE) return "over";
+    return "similar";
+  }
+  return priceDirection(caseRows[method]);
 }
 
 function directionSummary(sourceRows) {
@@ -3102,11 +3127,16 @@ function renderOverview() {
   const regressionTotal = regressionResultsById.size;
   const overviewSimilarPricingTableBody = document.querySelector("#overviewSimilarPricingTable tbody");
   const overviewOverPricingTableBody = document.querySelector("#overviewOverPricingTable tbody");
+  const overviewUnderPricingTableBody = document.querySelector("#overviewUnderPricingTable tbody");
+  const overviewStaticNoteEl = document.querySelector("#overviewStaticNote");
+  const overviewStaticModelTableBody = document.querySelector("#overviewStaticModelTable tbody");
+  const overviewStaticLeaderboardChartEl = document.querySelector("#overviewStaticLeaderboardChart");
   const regressionNoteEl = document.querySelector("#overviewRegressionNote");
   const regressionKpisEl = document.querySelector("#overviewRegressionKpis");
   const regressionWorstTableBody = document.querySelector("#overviewRegressionWorstTable tbody");
   const regressionBestTableBody = document.querySelector("#overviewRegressionBestTable tbody");
   const regressionPHatTableBody = document.querySelector("#overviewRegressionPHatTable tbody");
+  const regressionRevenueTableBody = document.querySelector("#overviewRegressionRevenueTable tbody");
 
   document.querySelector("#caseCount").textContent = fmtInt(cases.length);
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
@@ -3168,8 +3198,12 @@ function renderOverview() {
 
   const caseMetricSummaries = overviewMethods.map(model => {
     const losses = benchmarkLosses(benchmarkCompleted, model);
-    const directionRows = benchmarkCompleted.map(caseRows => caseRows[model]).filter(Boolean);
-    const directions = directionSummary(directionRows);
+    const directions = benchmarkCompleted.reduce((counts, caseRows) => {
+      const direction = benchmarkPriceDirection(caseRows, model);
+      if (direction) counts[direction] += 1;
+      return counts;
+    }, { under: 0, similar: 0, over: 0 });
+    const directionTotal = directions.under + directions.similar + directions.over;
     return {
       model,
       caseCount: losses.length,
@@ -3177,10 +3211,12 @@ function renderOverview() {
       nearOptimalRate: shareWhere(losses, value => value <= NEAR_OPTIMAL_THRESHOLD),
       severeLossCount: losses.filter(value => value >= SEVERE_LOSS_THRESHOLD).length,
       severeLossRate: shareWhere(losses, value => value >= SEVERE_LOSS_THRESHOLD),
+      underPricingCount: directions.under,
+      underPricingRate: directionTotal ? directions.under / directionTotal : NaN,
       similarPricingCount: directions.similar,
-      similarPricingRate: directions.total ? directions.similar / directions.total : NaN,
+      similarPricingRate: directionTotal ? directions.similar / directionTotal : NaN,
       overPricingCount: directions.over,
-      overPricingRate: directions.total ? directions.over / directions.total : NaN,
+      overPricingRate: directionTotal ? directions.over / directionTotal : NaN,
     };
   }).filter(item => item.caseCount);
 
@@ -3220,6 +3256,26 @@ function renderOverview() {
         </tr>`).join("")
     : `<tr><td colspan="5" class="quiet">No severe-loss leaderboard is available for the current filters.</td></tr>`;
 
+  const underPricingRanked = [...caseMetricSummaries]
+    .sort((a, b) =>
+      a.underPricingCount - b.underPricingCount
+        || a.underPricingRate - b.underPricingRate
+        || a.model.localeCompare(b.model)
+    );
+
+  if (overviewUnderPricingTableBody) {
+    overviewUnderPricingTableBody.innerHTML = underPricingRanked.length
+      ? underPricingRanked.map((item, index) => `
+          <tr>
+            <th>${index + 1}</th>
+            <td class="${index === 0 ? "winner-cell" : ""}">${item.model}</td>
+            <td class="${index === 0 ? "winner-cell" : ""}">${fmtInt(item.underPricingCount)}</td>
+            <td>${fmtPct(item.underPricingRate)}</td>
+            <td>${fmtInt(item.caseCount)}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="5" class="quiet">No under-pricing leaderboard is available for the current filters.</td></tr>`;
+  }
+
   const similarPricingRanked = [...caseMetricSummaries]
     .sort((a, b) =>
       b.similarPricingCount - a.similarPricingCount
@@ -3258,6 +3314,79 @@ function renderOverview() {
             <td>${fmtInt(item.caseCount)}</td>
           </tr>`).join("")
       : `<tr><td colspan="5" class="quiet">No over-pricing leaderboard is available for the current filters.</td></tr>`;
+  }
+
+  const staticMethods = [...overviewMethods, REGRESSION_LABEL];
+  const staticBenchmarkCompleted = benchmarkCompleted.filter(caseRows =>
+    levelValue(overviewMethods
+      .filter(method => method !== HEURISTIC_LABEL)
+      .map(method => caseRows[method])
+      .find(Boolean)?.scenario_subtype) === "static"
+    && Number.isFinite(regressionLoss(caseRows))
+  );
+  const staticPointCounts = new Map(staticMethods.map(model => [model, 0]));
+  staticBenchmarkCompleted.forEach(caseRows => {
+    const caseItems = staticMethods.map(model => ({
+      model,
+      loss: benchmarkLoss(caseRows, model),
+    })).filter(item => Number.isFinite(item.loss));
+    if (!caseItems.length) return;
+    const bestLoss = Math.min(...caseItems.map(item => item.loss));
+    const winners = caseItems.filter(item => Math.abs(item.loss - bestLoss) < 1e-12);
+    const pointShare = winners.length ? 1 / winners.length : 0;
+    winners.forEach(item => {
+      staticPointCounts.set(item.model, (staticPointCounts.get(item.model) || 0) + pointShare);
+    });
+  });
+  const staticPerformance = staticMethods.map(model => {
+    const losses = benchmarkLosses(staticBenchmarkCompleted, model);
+    return {
+      model,
+      comparedCases: losses.length,
+      meanLoss: mean(losses),
+      nearOptimalRate: shareWhere(losses, value => value <= NEAR_OPTIMAL_THRESHOLD),
+      severeLossRate: shareWhere(losses, value => value >= SEVERE_LOSS_THRESHOLD),
+      casePoints: staticPointCounts.get(model) || 0,
+    };
+  }).filter(item => item.comparedCases);
+  const rankedStaticPerformance = [...staticPerformance]
+    .sort((a, b) =>
+      a.meanLoss - b.meanLoss
+      || b.casePoints - a.casePoints
+      || a.severeLossRate - b.severeLossRate
+      || a.model.localeCompare(b.model)
+    );
+  const totalStaticPoints = [...staticPointCounts.values()].reduce((sum, value) => sum + value, 0);
+
+  if (overviewStaticNoteEl) {
+    overviewStaticNoteEl.innerHTML = staticBenchmarkCompleted.length
+      ? `<strong>${fmtInt(staticBenchmarkCompleted.length)} filtered static benchmark cases with regression output</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This section keeps only the <strong>static</strong> cases from the current overview filter set and compares <strong>GPT</strong>, <strong>Gemini</strong>, <strong>Claude</strong>, <strong>Heuristic</strong>, and <strong>Regression</strong> on the same case set. Regression uses the absolute <strong>revenue gap</strong> from <strong>Revenue_hat</strong> to <strong>Revenue_star</strong> as its loss measure.</span>`
+      : `<strong>No static benchmark cases with regression output for the current filters</strong><span>Try including <strong>static</strong> in the scenario filter or relaxing the current overview filters.</span>`;
+  }
+
+  if (overviewStaticModelTableBody) {
+    overviewStaticModelTableBody.innerHTML = rankedStaticPerformance.length
+      ? rankedStaticPerformance.map((item, index) => `
+          <tr>
+            <th>${index + 1}</th>
+            <td class="${index === 0 ? "winner-cell" : ""}">${item.model}</td>
+            <td class="${index === 0 ? "winner-cell" : ""}">${fmtLoss(item.meanLoss)}</td>
+            <td>${fmtPct(item.nearOptimalRate)}</td>
+            <td>${fmtPct(item.severeLossRate)}</td>
+            <td>${fmtNum(item.casePoints)} <span class="quiet">(${fmtPct(totalStaticPoints ? item.casePoints / totalStaticPoints : NaN)})</span></td>
+            <td>${fmtInt(item.comparedCases)}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="7" class="quiet">No static across-method table is available for the current filters.</td></tr>`;
+  }
+
+  if (overviewStaticLeaderboardChartEl) {
+    overviewStaticLeaderboardChartEl.innerHTML = rankedStaticPerformance.length
+      ? renderAcrossMeanChart(rankedStaticPerformance.map(item => ({
+          model: item.model,
+          n: item.comparedCases,
+          meanLoss: item.meanLoss,
+        })))
+      : `<p class="quiet">No static across-method chart is available for the current filters.</p>`;
   }
 
   const meanRSquared = mean(regressionItems.map(item => item.r_squared).filter(Number.isFinite));
@@ -3354,6 +3483,33 @@ function renderOverview() {
             <td>${fmtSignedLoss(item.price_pct_gap)} <span class="quiet">(${fmtNum(item.price_gap)})</span></td>
           </tr>`).join("")
       : `<tr><td colspan="10" class="quiet">No static regression fitted prices match the current overview filters.</td></tr>`;
+  }
+
+  const topRevenueItems = [...regressionItems]
+    .filter(item => Number.isFinite(item.revenue_hat) && Number.isFinite(item.revenue_star))
+    .sort((a, b) =>
+      Math.abs(a.revenue_gap) - Math.abs(b.revenue_gap)
+      || Math.abs(a.revenue_pct_gap) - Math.abs(b.revenue_pct_gap)
+      || a.instance_id.localeCompare(b.instance_id)
+    )
+    .slice(0, 12);
+
+  if (regressionRevenueTableBody) {
+    regressionRevenueTableBody.innerHTML = topRevenueItems.length
+      ? topRevenueItems.map((item, index) => `
+          <tr>
+            <th>${index + 1}</th>
+            <td>${item.instance_id}</td>
+            <td>${displayLevel(item.demand_model)}</td>
+            <td>${displayLevel(item.parameter_set)}</td>
+            <td>${displayLevel(item.sigma)}</td>
+            <td>${displayLevel(item.history_length)}${item.history_term ? ` (${displayLevel(item.history_term)})` : ""}</td>
+            <td>${displayLevel(item.mc)}</td>
+            <td>${fmtNum(item.revenue_hat)}</td>
+            <td>${fmtNum(item.revenue_star)}</td>
+            <td>${fmtSignedLoss(item.revenue_pct_gap)} <span class="quiet">(${fmtNum(item.revenue_gap)})</span></td>
+          </tr>`).join("")
+      : `<tr><td colspan="10" class="quiet">No static regression fitted revenues match the current overview filters.</td></tr>`;
   }
 }
 

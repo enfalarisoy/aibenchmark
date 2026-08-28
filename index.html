@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=20260820e">
+  <link rel="stylesheet" href="styles.css?v=20260828c">
 </head>
 <body>
   <header class="topbar">
@@ -29,6 +29,16 @@
     </nav>
 
     <section id="overview" class="panel">
+      <div class="toolbar card" aria-label="Overview filters">
+        <div class="overview-filter-header">
+          <div>
+            <div class="multi-select-label">Overview filters</div>
+            <div class="checkbox-filter-summary" id="overviewFilterSummary">All filters selected</div>
+          </div>
+          <button id="resetOverviewFilters" class="secondary-button" type="button">Reset filters</button>
+        </div>
+        <div class="overview-filter-grid" id="overviewFilterGrid"></div>
+      </div>
       <article class="comparison-note card" id="overviewNote"></article>
 
       <article class="card table-card">
@@ -104,6 +114,86 @@
           </div>
         </article>
       </div>
+
+      <article class="comparison-note card" id="overviewRegressionNote"></article>
+
+      <div class="kpi-grid" id="overviewRegressionKpis"></div>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Static regression worst-fit instances</h2>
+          <span>Filtered static instances ranked by absolute revenue gap</span>
+        </div>
+        <div class="table-wrap compact-table">
+          <table id="overviewRegressionWorstTable">
+            <thead>
+              <tr>
+                <th>Instance</th>
+                <th>Demand model</th>
+                <th>Parameter set</th>
+                <th>Sigma</th>
+                <th>History</th>
+                <th>MC</th>
+                <th>R²</th>
+                <th>|Price gap|</th>
+                <th>|Revenue gap|</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Static regression best-fit instances</h2>
+          <span>Filtered static instances ranked by smallest absolute revenue gap</span>
+        </div>
+        <div class="table-wrap compact-table">
+          <table id="overviewRegressionBestTable">
+            <thead>
+              <tr>
+                <th>Instance</th>
+                <th>Demand model</th>
+                <th>Parameter set</th>
+                <th>Sigma</th>
+                <th>History</th>
+                <th>MC</th>
+                <th>R²</th>
+                <th>|Price gap|</th>
+                <th>|Revenue gap|</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Static regression closest P-hat to P-star</h2>
+          <span>Filtered static instances ranked by smallest absolute price gap</span>
+        </div>
+        <div class="table-wrap compact-table">
+          <table id="overviewRegressionPHatTable">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Instance</th>
+                <th>Demand model</th>
+                <th>Parameter set</th>
+                <th>Sigma</th>
+                <th>History</th>
+                <th>MC</th>
+                <th>P_hat</th>
+                <th>P_star</th>
+                <th>Price gap</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
     </section>
 
     <section id="across" class="panel" hidden>
@@ -755,8 +845,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>3.2</div>
+    <div>4.0</div>
   </footer>
-  <script src="app.js?v=20260822c"></script>
+  <script src="app.js?v=20260828c"></script>
 </body>
 </html>

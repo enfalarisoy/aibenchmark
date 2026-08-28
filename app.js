@@ -3,6 +3,7 @@ let rows = [];
 let models = [];
 let rowsByModel = new Map();
 let answeredRowsByModel = new Map();
+let regressionResultsById = new Map();
 const withinFieldCache = new Map();
 const withinGroupSummaryCache = new Map();
 const tTestRowCache = new Map();
@@ -15,6 +16,7 @@ let selectedGroup = "demand_model";
 let selectedWithinGroup = "demand_model";
 let selectedAcrossDemandModels = [];
 let selectedDensityCutoff = "2";
+let selectedOverviewFilters = {};
 let selectedTestFilters = {};
 let selectedWithinTestModels = [];
 let selectedWithinTestField = "role";
@@ -244,6 +246,7 @@ function cacheKeyPart(values) {
 
 function dropdownStateKey(dropdown) {
   return dropdown?.dataset.testFilterDropdown
+    || dropdown?.dataset.overviewFilterDropdown
     || dropdown?.dataset.withinTTestFilterDropdown
     || "";
 }
@@ -258,7 +261,7 @@ function restoreOpenDropdownKeys(keys) {
   if (!Array.isArray(keys) || !keys.length) return;
   keys.forEach(key => {
     const dropdown = document.querySelector(
-      `[data-test-filter-dropdown="${key}"], [data-within-t-test-filter-dropdown="${key}"]`
+      `[data-test-filter-dropdown="${key}"], [data-overview-filter-dropdown="${key}"], [data-within-t-test-filter-dropdown="${key}"]`
     );
     if (dropdown) dropdown.open = true;
   });
@@ -828,6 +831,10 @@ function availableTestFilterValues(field) {
   return uniqueSorted(field);
 }
 
+function availableOverviewFilterValues(field) {
+  return uniqueSorted(field);
+}
+
 function selectedTestFilterValues(field, available = availableTestFilterValues(field)) {
   const current = selectedTestFilters[field];
   if (!available.length) return [];
@@ -838,6 +845,18 @@ function selectedTestFilterValues(field, available = availableTestFilterValues(f
   const validSelected = current.filter(value => available.includes(value));
   if (validSelected.length !== current.length) selectedTestFilters[field] = validSelected;
   return selectedTestFilters[field];
+}
+
+function selectedOverviewFilterValues(field, available = availableOverviewFilterValues(field)) {
+  const current = selectedOverviewFilters[field];
+  if (!available.length) return [];
+  if (!Array.isArray(current)) {
+    selectedOverviewFilters[field] = [...available];
+    return selectedOverviewFilters[field];
+  }
+  const validSelected = current.filter(value => available.includes(value));
+  if (validSelected.length !== current.length) selectedOverviewFilters[field] = validSelected;
+  return selectedOverviewFilters[field];
 }
 
 function allFieldLabel(field) {
@@ -858,6 +877,35 @@ function populateTestFilterControl(field) {
   const host = document.querySelector(`[data-test-filter-list="${field}"]`);
   const summary = document.querySelector(`[data-test-filter-summary="${field}"]`);
   const menuSummary = document.querySelector(`[data-test-filter-menu-summary="${field}"]`);
+
+  if (!host || !summary || !menuSummary) return;
+
+  if (!available.length) {
+    host.innerHTML = `<p class="quiet">No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} were found in the loaded data.</p>`;
+    summary.textContent = `No ${GROUP_OPTIONS[field].toLowerCase()}`;
+    menuSummary.textContent = `No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} available`;
+    return;
+  }
+
+  host.innerHTML = available.map(value => `
+    <label class="checkbox-chip">
+      <input type="checkbox" value="${value}" ${selected.includes(value) ? "checked" : ""}>
+      <span>${displayLevel(value)}</span>
+    </label>
+  `).join("");
+
+  summary.textContent = formatTestFilterSummary(field, available, selected);
+  menuSummary.textContent = selected.length === available.length
+    ? `${allFieldLabel(field)} selected`
+    : `${fmtInt(selected.length)} of ${fmtInt(available.length)} ${FILTER_PLURAL_LABELS[field] || "items"} selected`;
+}
+
+function populateOverviewFilterControl(field) {
+  const available = availableOverviewFilterValues(field);
+  const selected = selectedOverviewFilterValues(field, available);
+  const host = document.querySelector(`[data-overview-filter-list="${field}"]`);
+  const summary = document.querySelector(`[data-overview-filter-summary="${field}"]`);
+  const menuSummary = document.querySelector(`[data-overview-filter-menu-summary="${field}"]`);
 
   if (!host || !summary || !menuSummary) return;
 
@@ -902,6 +950,39 @@ function populateTestFilterControls() {
   TEST_FILTER_FIELDS.forEach(field => {
     populateTestFilterControl(field);
   });
+}
+
+function populateOverviewFilterControls() {
+  const host = document.querySelector("#overviewFilterGrid");
+  if (!host) return;
+  host.innerHTML = TEST_FILTER_FIELDS.map(field => `
+    <div class="multi-select-filter" data-overview-filter-wrap="${field}">
+      <span class="multi-select-label">${GROUP_OPTIONS[field]}</span>
+      <details class="multi-select" data-overview-filter-dropdown="${field}">
+        <summary class="multi-select-trigger" data-overview-filter-summary="${field}">Loading…</summary>
+        <div class="multi-select-menu">
+          <div class="checkbox-filter-top">
+            <span class="checkbox-filter-summary" data-overview-filter-menu-summary="${field}">Loading…</span>
+            <button class="mini-button" data-overview-filter-reset="${field}" type="button">Select all</button>
+          </div>
+          <div class="checkbox-list multi-select-checkbox-list multi-select-option-list" data-overview-filter-list="${field}"></div>
+        </div>
+      </details>
+    </div>
+  `).join("");
+
+  TEST_FILTER_FIELDS.forEach(field => {
+    populateOverviewFilterControl(field);
+  });
+
+  const activeCount = TEST_FILTER_FIELDS.reduce((count, field) => {
+    const available = availableOverviewFilterValues(field);
+    const selected = selectedOverviewFilterValues(field, available);
+    return count + (available.length && selected.length !== available.length ? 1 : 0);
+  }, 0);
+  document.querySelector("#overviewFilterSummary").textContent = activeCount
+    ? `${fmtInt(activeCount)} filters applied`
+    : "All filters selected";
 }
 
 function populateWithinTestControls() {
@@ -1329,6 +1410,15 @@ function passesFilters(row) {
   return selectedAcrossDemandModels.includes(levelValue(row.demand_model));
 }
 
+function passesOverviewFilters(row) {
+  return TEST_FILTER_FIELDS.every(field => {
+    const selected = selectedOverviewFilters[field];
+    if (!Array.isArray(selected)) return true;
+    if (!selected.length) return false;
+    return selected.includes(levelValue(row[field]));
+  });
+}
+
 function passesTestFilters(row) {
   return TEST_FILTER_FIELDS.every(field => {
     const selected = selectedTestFilters[field];
@@ -1342,6 +1432,15 @@ function activeTestFilterLabels() {
   return TEST_FILTER_FIELDS.flatMap(field => {
     const available = availableTestFilterValues(field);
     const selected = selectedTestFilterValues(field, available);
+    if (selected.length === available.length) return [];
+    return [`${GROUP_OPTIONS[field]}: ${formatTestFilterSummary(field, available, selected)}`];
+  });
+}
+
+function activeOverviewFilterLabels() {
+  return TEST_FILTER_FIELDS.flatMap(field => {
+    const available = availableOverviewFilterValues(field);
+    const selected = selectedOverviewFilterValues(field, available);
     if (selected.length === available.length) return [];
     return [`${GROUP_OPTIONS[field]}: ${formatTestFilterSummary(field, available, selected)}`];
   });
@@ -1425,6 +1524,33 @@ function benchmarkInputColumns() {
   return payload.input_columns || Object.keys(GROUP_OPTIONS);
 }
 
+function regressionResultsForOverview() {
+  const staticRows = rows.filter(row =>
+    levelValue(row.scenario_subtype) === "static"
+    && passesOverviewFilters(row)
+  );
+  const rowsByInstance = new Map();
+  staticRows.forEach(row => {
+    if (row.instance_id && !rowsByInstance.has(row.instance_id)) {
+      rowsByInstance.set(row.instance_id, row);
+    }
+  });
+
+  return [...rowsByInstance.entries()].map(([instanceId, sourceRow]) => {
+    const regression = regressionResultsById.get(instanceId);
+    if (!regression) return null;
+    return {
+      ...regression,
+      sigma: Number.isFinite(regression.noise_level) ? regression.noise_level : sourceRow.sigma,
+      history_length: Number.isFinite(regression.history_length) ? regression.history_length : sourceRow.history_length,
+      history_term: sourceRow.history_term,
+      mc: Number.isFinite(regression.mc) ? regression.mc : sourceRow.mc,
+      demand_model: regression.demand_model || sourceRow.demand_model,
+      parameter_set: regression.parameter_set || sourceRow.parameter_set,
+    };
+  }).filter(Boolean);
+}
+
 function withinMatchKey(row, varyingField, ignoredFields = []) {
   const linkedFields = varyingField === "dist_hint_applied" ? ["dist_hint"] : [];
   const derivedFields = [
@@ -1474,6 +1600,7 @@ function rebuildDerivedIndexes() {
   answeredRowsByModel = new Map(
     models.map(model => [model, rows.filter(row => row.model === model && row.answered)])
   );
+  regressionResultsById = new Map(Object.entries(payload.regression_results || {}));
   withinFieldCache.clear();
   withinGroupSummaryCache.clear();
   tTestRowCache.clear();
@@ -2965,11 +3092,19 @@ function renderTTests() {
 }
 
 function renderOverview() {
-  const cases = comparableCases(passesTestFilters);
+  populateOverviewFilterControls();
+  const cases = comparableCases(passesOverviewFilters);
   const completed = completeCases(cases);
   const benchmarkCompleted = completed.filter(caseRows => Number.isFinite(heuristicLoss(caseRows)));
-  const activeFilters = activeTestFilterLabels();
+  const activeFilters = activeOverviewFilterLabels();
   const overviewMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
+  const regressionItems = regressionResultsForOverview();
+  const regressionTotal = regressionResultsById.size;
+  const regressionNoteEl = document.querySelector("#overviewRegressionNote");
+  const regressionKpisEl = document.querySelector("#overviewRegressionKpis");
+  const regressionWorstTableBody = document.querySelector("#overviewRegressionWorstTable tbody");
+  const regressionBestTableBody = document.querySelector("#overviewRegressionBestTable tbody");
+  const regressionPHatTableBody = document.querySelector("#overviewRegressionPHatTable tbody");
 
   document.querySelector("#caseCount").textContent = fmtInt(cases.length);
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
@@ -3007,7 +3142,7 @@ function renderOverview() {
         || a.model.localeCompare(b.model)
     );
   document.querySelector("#overviewNote").innerHTML =
-    `<strong>${fmtInt(completed.length)} complete paired LLM cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Overview comparisons include <strong>Heuristic</strong> and therefore use ${fmtInt(benchmarkCompleted.length)} cases with a valid heuristic benchmark. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method. The mean-loss chart summarizes the four methods across that same shared case set.</span>`;
+    `<strong>${fmtInt(completed.length)} complete paired LLM cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong> and therefore use ${fmtInt(benchmarkCompleted.length)} cases with a valid heuristic benchmark. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method. The mean-loss chart summarizes the four methods across that same shared case set.</span>`;
 
   document.querySelector("#overviewCaseLeaderboardTable tbody").innerHTML = rankedCaseLeaderboard.length
     ? rankedCaseLeaderboard.map((item, index) => `
@@ -3076,6 +3211,102 @@ function renderOverview() {
           <td>${fmtInt(item.caseCount)}</td>
         </tr>`).join("")
     : `<tr><td colspan="5" class="quiet">No severe-loss leaderboard is available for the current filters.</td></tr>`;
+
+  const meanRSquared = mean(regressionItems.map(item => item.r_squared).filter(Number.isFinite));
+  const meanAbsPriceGap = mean(regressionItems.map(item => Math.abs(item.price_pct_gap)).filter(Number.isFinite));
+  const meanAbsRevenueGap = mean(regressionItems.map(item => Math.abs(item.revenue_pct_gap)).filter(Number.isFinite));
+  if (regressionNoteEl) {
+    regressionNoteEl.innerHTML = regressionItems.length
+      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum.</span>`
+      : `<strong>No static regression diagnostics for the current filters</strong><span>Regression diagnostics are only available for the <strong>static</strong> instances. Try including static in the scenario filter or relaxing the current overview filters.</span>`;
+  }
+
+  if (regressionKpisEl) {
+    regressionKpisEl.innerHTML = [
+      kpi("Static instances", fmtInt(regressionItems.length), `${fmtInt(regressionTotal)} total static instances have regression output`),
+      kpi("Mean R²", fmtNum(meanRSquared), "Higher indicates a tighter linear fit on the sampled price-demand points"),
+      kpi("Mean |price gap|", fmtPct(meanAbsPriceGap), "Absolute percent gap between fitted price and optimal price"),
+      kpi("Mean |revenue gap|", fmtPct(meanAbsRevenueGap), "Absolute percent gap between fitted revenue and optimal revenue"),
+    ].join("");
+  }
+
+  const worstRegressionItems = [...regressionItems]
+    .sort((a, b) =>
+      Math.abs(b.revenue_pct_gap) - Math.abs(a.revenue_pct_gap)
+      || Math.abs(b.price_pct_gap) - Math.abs(a.price_pct_gap)
+      || a.instance_id.localeCompare(b.instance_id)
+    )
+    .slice(0, 12);
+
+  if (regressionWorstTableBody) {
+    regressionWorstTableBody.innerHTML = worstRegressionItems.length
+      ? worstRegressionItems.map(item => `
+          <tr>
+            <th>${item.instance_id}</th>
+            <td>${displayLevel(item.demand_model)}</td>
+            <td>${displayLevel(item.parameter_set)}</td>
+            <td>${displayLevel(item.sigma)}</td>
+            <td>${displayLevel(item.history_length)}${item.history_term ? ` (${displayLevel(item.history_term)})` : ""}</td>
+            <td>${displayLevel(item.mc)}</td>
+            <td>${fmtNum(item.r_squared)}</td>
+            <td>${fmtPct(Math.abs(item.price_pct_gap))}</td>
+            <td>${fmtPct(Math.abs(item.revenue_pct_gap))}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="9" class="quiet">No static regression instances match the current overview filters.</td></tr>`;
+  }
+
+  const bestRegressionItems = [...regressionItems]
+    .sort((a, b) =>
+      Math.abs(a.revenue_pct_gap) - Math.abs(b.revenue_pct_gap)
+      || Math.abs(a.price_pct_gap) - Math.abs(b.price_pct_gap)
+      || b.r_squared - a.r_squared
+      || a.instance_id.localeCompare(b.instance_id)
+    )
+    .slice(0, 12);
+
+  if (regressionBestTableBody) {
+    regressionBestTableBody.innerHTML = bestRegressionItems.length
+      ? bestRegressionItems.map(item => `
+          <tr>
+            <th>${item.instance_id}</th>
+            <td>${displayLevel(item.demand_model)}</td>
+            <td>${displayLevel(item.parameter_set)}</td>
+            <td>${displayLevel(item.sigma)}</td>
+            <td>${displayLevel(item.history_length)}${item.history_term ? ` (${displayLevel(item.history_term)})` : ""}</td>
+            <td>${displayLevel(item.mc)}</td>
+            <td>${fmtNum(item.r_squared)}</td>
+            <td>${fmtPct(Math.abs(item.price_pct_gap))}</td>
+            <td>${fmtPct(Math.abs(item.revenue_pct_gap))}</td>
+          </tr>`).join("")
+      : `<tr><td colspan="9" class="quiet">No static regression instances match the current overview filters.</td></tr>`;
+  }
+
+  const topPHatItems = [...regressionItems]
+    .filter(item => Number.isFinite(item.p_hat))
+    .sort((a, b) =>
+      Math.abs(a.price_gap) - Math.abs(b.price_gap)
+      || Math.abs(a.price_pct_gap) - Math.abs(b.price_pct_gap)
+      || a.instance_id.localeCompare(b.instance_id)
+    )
+    .slice(0, 12);
+
+  if (regressionPHatTableBody) {
+    regressionPHatTableBody.innerHTML = topPHatItems.length
+      ? topPHatItems.map((item, index) => `
+          <tr>
+            <th>${index + 1}</th>
+            <td>${item.instance_id}</td>
+            <td>${displayLevel(item.demand_model)}</td>
+            <td>${displayLevel(item.parameter_set)}</td>
+            <td>${displayLevel(item.sigma)}</td>
+            <td>${displayLevel(item.history_length)}${item.history_term ? ` (${displayLevel(item.history_term)})` : ""}</td>
+            <td>${displayLevel(item.mc)}</td>
+            <td>${fmtNum(item.p_hat)}</td>
+            <td>${fmtNum(item.p_star)}</td>
+            <td>${fmtSignedLoss(item.price_pct_gap)} <span class="quiet">(${fmtNum(item.price_gap)})</span></td>
+          </tr>`).join("")
+      : `<tr><td colspan="10" class="quiet">No static regression fitted prices match the current overview filters.</td></tr>`;
+  }
 }
 
 function renderWithinTests() {
@@ -3678,6 +3909,16 @@ document.querySelector("#withinGroupPicker").addEventListener("change", event =>
 });
 
 document.addEventListener("click", event => {
+  const overviewResetButton = event.target.closest("[data-overview-filter-reset]");
+  if (overviewResetButton) {
+    const field = overviewResetButton.dataset.overviewFilterReset;
+    const available = availableOverviewFilterValues(field);
+    const selected = selectedOverviewFilterValues(field, available);
+    selectedOverviewFilters[field] = selected.length === available.length ? [] : [...available];
+    rerenderWithOpenDropdowns(renderOverview);
+    return;
+  }
+
   const resetButton = event.target.closest("[data-test-filter-reset]");
   if (resetButton) {
     const field = resetButton.dataset.testFilterReset;
@@ -3701,6 +3942,19 @@ document.querySelectorAll("[data-test-filter-list]").forEach(host => {
     selectedTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
     rerenderWithOpenDropdowns(render);
   });
+});
+
+document.addEventListener("change", event => {
+  const host = event.target.closest("[data-overview-filter-list]");
+  if (!host || !(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  const field = host.dataset.overviewFilterList;
+  selectedOverviewFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
+  rerenderWithOpenDropdowns(renderOverview);
+});
+
+document.querySelector("#resetOverviewFilters").addEventListener("click", () => {
+  selectedOverviewFilters = {};
+  renderOverview();
 });
 
 document.querySelector("#resetTestFilters").addEventListener("click", () => {

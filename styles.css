@@ -96,6 +96,13 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+.regression-status {
+  color: #9f3c2c;
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .tabs {
   display: flex;
   flex-wrap: wrap;

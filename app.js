@@ -236,9 +236,19 @@ function heuristicLoss(caseRows) {
 function regressionLoss(caseRows) {
   const sourceRow = Object.values(caseRows).find(row => row?.instance_id);
   const regression = sourceRow?.instance_id ? regressionResultsById.get(sourceRow.instance_id) : null;
-  return regression && Number.isFinite(regression.revenue_pct_gap)
+  return regression?.fit_status !== "infeasible" && Number.isFinite(regression?.revenue_pct_gap)
     ? Math.abs(regression.revenue_pct_gap)
     : NaN;
+}
+
+function regressionIsEligible(item) {
+  return item?.fit_status !== "infeasible";
+}
+
+function regressionStatus(item) {
+  return regressionIsEligible(item)
+    ? ""
+    : `<span class="regression-status" title="${item.fit_status_reason || "Excluded from regression comparisons."}">Infeasible: excluded</span>`;
 }
 
 function benchmarkLoss(caseRows, method) {
@@ -460,6 +470,17 @@ function priceDirection(row) {
 }
 
 function benchmarkPriceDirection(caseRows, method) {
+  if (method === REGRESSION_LABEL) {
+    const sourceRow = Object.values(caseRows).find(row => row?.instance_id);
+    const regression = sourceRow?.instance_id ? regressionResultsById.get(sourceRow.instance_id) : null;
+    if (!regressionIsEligible(regression) || !Number.isFinite(regression?.p_hat) || !Number.isFinite(regression?.p_star) || regression.p_star === 0) {
+      return null;
+    }
+    const relativeDeviation = (regression.p_hat - regression.p_star) / regression.p_star;
+    if (relativeDeviation < -PRICE_DIRECTION_TOLERANCE) return "under";
+    if (relativeDeviation > PRICE_DIRECTION_TOLERANCE) return "over";
+    return "similar";
+  }
   if (method === HEURISTIC_LABEL) {
     const sourceRow = Object.values(caseRows).find(row =>
       row?.answered && Number.isFinite(row?.heuristic_price) && Number.isFinite(row?.p_star)
@@ -3120,11 +3141,22 @@ function renderOverview() {
   populateOverviewFilterControls();
   const cases = comparableCases(passesOverviewFilters);
   const completed = completeCases(cases);
-  const benchmarkCompleted = completed.filter(caseRows => Number.isFinite(heuristicLoss(caseRows)));
   const activeFilters = activeOverviewFilterLabels();
-  const overviewMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
+  const overviewScenarioValues = selectedOverviewFilterValues(
+    "scenario_subtype",
+    availableOverviewFilterValues("scenario_subtype")
+  );
+  const showRegression = overviewScenarioValues.length === 1 && overviewScenarioValues[0] === "static";
+  const baseOverviewMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
+  const overviewMethods = showRegression ? [...baseOverviewMethods, REGRESSION_LABEL] : baseOverviewMethods;
+  const benchmarkCompleted = completed.filter(caseRows =>
+    Number.isFinite(heuristicLoss(caseRows))
+    && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
+  );
   const regressionItems = regressionResultsForOverview();
   const regressionTotal = regressionResultsById.size;
+  const eligibleRegressionItems = regressionItems.filter(regressionIsEligible);
+  const infeasibleRegressionItems = regressionItems.filter(item => !regressionIsEligible(item));
   const overviewSimilarPricingTableBody = document.querySelector("#overviewSimilarPricingTable tbody");
   const overviewOverPricingTableBody = document.querySelector("#overviewOverPricingTable tbody");
   const overviewUnderPricingTableBody = document.querySelector("#overviewUnderPricingTable tbody");
@@ -3137,6 +3169,9 @@ function renderOverview() {
   const regressionBestTableBody = document.querySelector("#overviewRegressionBestTable tbody");
   const regressionPHatTableBody = document.querySelector("#overviewRegressionPHatTable tbody");
   const regressionRevenueTableBody = document.querySelector("#overviewRegressionRevenueTable tbody");
+  const regressionSection = document.querySelector("#overviewRegressionSection");
+
+  if (regressionSection) regressionSection.hidden = !showRegression;
 
   document.querySelector("#caseCount").textContent = fmtInt(cases.length);
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
@@ -3174,7 +3209,7 @@ function renderOverview() {
         || a.model.localeCompare(b.model)
     );
   document.querySelector("#overviewNote").innerHTML =
-    `<strong>${fmtInt(completed.length)} complete paired LLM cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong> and therefore use ${fmtInt(benchmarkCompleted.length)} cases with a valid heuristic benchmark. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method. The mean-loss chart summarizes the four methods across that same shared case set.</span>`;
+    `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression is included only for the eligible static fits." : ""}</span>`;
 
   document.querySelector("#overviewCaseLeaderboardTable tbody").innerHTML = rankedCaseLeaderboard.length
     ? rankedCaseLeaderboard.map((item, index) => `
@@ -3316,7 +3351,9 @@ function renderOverview() {
       : `<tr><td colspan="5" class="quiet">No over-pricing leaderboard is available for the current filters.</td></tr>`;
   }
 
-  const staticMethods = [...overviewMethods, REGRESSION_LABEL];
+  const staticMethods = overviewMethods.includes(REGRESSION_LABEL)
+    ? overviewMethods
+    : [...overviewMethods, REGRESSION_LABEL];
   const staticBenchmarkCompleted = benchmarkCompleted.filter(caseRows =>
     levelValue(overviewMethods
       .filter(method => method !== HEURISTIC_LABEL)
@@ -3389,18 +3426,18 @@ function renderOverview() {
       : `<p class="quiet">No static across-method chart is available for the current filters.</p>`;
   }
 
-  const meanRSquared = mean(regressionItems.map(item => item.r_squared).filter(Number.isFinite));
-  const meanAbsPriceGap = mean(regressionItems.map(item => Math.abs(item.price_pct_gap)).filter(Number.isFinite));
-  const meanAbsRevenueGap = mean(regressionItems.map(item => Math.abs(item.revenue_pct_gap)).filter(Number.isFinite));
+  const meanRSquared = mean(eligibleRegressionItems.map(item => item.r_squared).filter(Number.isFinite));
+  const meanAbsPriceGap = mean(eligibleRegressionItems.map(item => Math.abs(item.price_pct_gap)).filter(Number.isFinite));
+  const meanAbsRevenueGap = mean(eligibleRegressionItems.map(item => Math.abs(item.revenue_pct_gap)).filter(Number.isFinite));
   if (regressionNoteEl) {
     regressionNoteEl.innerHTML = regressionItems.length
-      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum.</span>`
+      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum.${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
       : `<strong>No static regression diagnostics for the current filters</strong><span>Regression diagnostics are only available for the <strong>static</strong> instances. Try including static in the scenario filter or relaxing the current overview filters.</span>`;
   }
 
   if (regressionKpisEl) {
     regressionKpisEl.innerHTML = [
-      kpi("Static instances", fmtInt(regressionItems.length), `${fmtInt(regressionTotal)} total static instances have regression output`),
+      kpi("Static instances", fmtInt(eligibleRegressionItems.length), `${fmtInt(regressionTotal)} total static instances have regression output${infeasibleRegressionItems.length ? `; ${fmtInt(infeasibleRegressionItems.length)} infeasible fit excluded` : ""}`),
       kpi("Mean R²", fmtNum(meanRSquared), "Higher indicates a tighter linear fit on the sampled price-demand points"),
       kpi("Mean |price gap|", fmtPct(meanAbsPriceGap), "Absolute percent gap between fitted price and optimal price"),
       kpi("Mean |revenue gap|", fmtPct(meanAbsRevenueGap), "Absolute percent gap between fitted revenue and optimal revenue"),
@@ -3420,6 +3457,7 @@ function renderOverview() {
       ? worstRegressionItems.map(item => `
           <tr>
             <th>${item.instance_id}</th>
+            <td>${regressionStatus(item)}</td>
             <td>${displayLevel(item.demand_model)}</td>
             <td>${displayLevel(item.parameter_set)}</td>
             <td>${displayLevel(item.sigma)}</td>
@@ -3429,10 +3467,10 @@ function renderOverview() {
             <td>${fmtPct(Math.abs(item.price_pct_gap))}</td>
             <td>${fmtPct(Math.abs(item.revenue_pct_gap))}</td>
           </tr>`).join("")
-      : `<tr><td colspan="9" class="quiet">No static regression instances match the current overview filters.</td></tr>`;
+      : `<tr><td colspan="10" class="quiet">No static regression instances match the current overview filters.</td></tr>`;
   }
 
-  const bestRegressionItems = [...regressionItems]
+  const bestRegressionItems = [...eligibleRegressionItems]
     .sort((a, b) =>
       Math.abs(a.revenue_pct_gap) - Math.abs(b.revenue_pct_gap)
       || Math.abs(a.price_pct_gap) - Math.abs(b.price_pct_gap)
@@ -3446,6 +3484,7 @@ function renderOverview() {
       ? bestRegressionItems.map(item => `
           <tr>
             <th>${item.instance_id}</th>
+            <td>${regressionStatus(item)}</td>
             <td>${displayLevel(item.demand_model)}</td>
             <td>${displayLevel(item.parameter_set)}</td>
             <td>${displayLevel(item.sigma)}</td>
@@ -3455,10 +3494,10 @@ function renderOverview() {
             <td>${fmtPct(Math.abs(item.price_pct_gap))}</td>
             <td>${fmtPct(Math.abs(item.revenue_pct_gap))}</td>
           </tr>`).join("")
-      : `<tr><td colspan="9" class="quiet">No static regression instances match the current overview filters.</td></tr>`;
+      : `<tr><td colspan="10" class="quiet">No eligible static regression instances match the current overview filters.</td></tr>`;
   }
 
-  const topPHatItems = [...regressionItems]
+  const topPHatItems = [...eligibleRegressionItems]
     .filter(item => Number.isFinite(item.p_hat))
     .sort((a, b) =>
       Math.abs(a.price_gap) - Math.abs(b.price_gap)
@@ -3485,7 +3524,7 @@ function renderOverview() {
       : `<tr><td colspan="10" class="quiet">No static regression fitted prices match the current overview filters.</td></tr>`;
   }
 
-  const topRevenueItems = [...regressionItems]
+  const topRevenueItems = [...eligibleRegressionItems]
     .filter(item => Number.isFinite(item.revenue_hat) && Number.isFinite(item.revenue_star))
     .sort((a, b) =>
       Math.abs(a.revenue_gap) - Math.abs(b.revenue_gap)

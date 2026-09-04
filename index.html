@@ -692,9 +692,9 @@
       </article>
 
       <article class="card table-card">
-        <div class="card-heading">
-          <h2>Direction detail</h2>
-          <span>Complete matched cases only</span>
+          <div class="card-heading">
+            <h2>Direction detail</h2>
+            <span>Price: P_hat vs P_star. Revenue: R_hat vs R_star. Complete matched cases only.</span>
         </div>
         <div class="table-wrap">
           <table id="acrossDirectionMatchedTable">
@@ -702,9 +702,11 @@
               <tr>
                 <th>Method</th>
                 <th>N</th>
-                <th>Under</th>
-                <th>Similar</th>
-                <th>Over</th>
+                <th>Under (P_hat &lt; 0.95 P_star)</th>
+                <th>Similar (0.95-1.05 P_star)</th>
+                <th>Over (P_hat &gt; 1.05 P_star)</th>
+                <th>Near-optimal (R_hat &ge; 0.95 R_star)</th>
+                <th>Severe loss (R_hat &le; 0.75 R_star)</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -825,6 +827,8 @@
     </section>
 
     <section id="tTestsAcross" class="panel">
+      <div id="tTestAcrossFilterPanel" class="toolbar card test-selection-toolbar" aria-label="Across-model t test case selection"></div>
+
       <div class="toolbar card" aria-label="Across-model t test controls">
         <fieldset class="checkbox-filter">
           <legend>Models</legend>
@@ -973,8 +977,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>5.0</div>
+    <div>5.1</div>
   </footer>
-  <script src="app.js?v=20260831a"></script>
+  <script src="app.js?v=20260905d"></script>
 </body>
 </html>

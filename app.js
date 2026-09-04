@@ -266,10 +266,13 @@ function cacheKeyPart(values) {
 }
 
 function dropdownStateKey(dropdown) {
-  return dropdown?.dataset.testFilterDropdown
+  const key = dropdown?.dataset.testFilterDropdown
     || dropdown?.dataset.overviewFilterDropdown
     || dropdown?.dataset.withinTTestFilterDropdown
     || "";
+  return dropdown?.closest("#tTestsAcross") && dropdown?.dataset.testFilterDropdown
+    ? `t-tests-across:${key}`
+    : key;
 }
 
 function captureOpenDropdownKeys() {
@@ -281,9 +284,14 @@ function captureOpenDropdownKeys() {
 function restoreOpenDropdownKeys(keys) {
   if (!Array.isArray(keys) || !keys.length) return;
   keys.forEach(key => {
-    const dropdown = document.querySelector(
-      `[data-test-filter-dropdown="${key}"], [data-overview-filter-dropdown="${key}"], [data-within-t-test-filter-dropdown="${key}"]`
-    );
+    const acrossTTestKey = key.startsWith("t-tests-across:")
+      ? key.slice("t-tests-across:".length)
+      : null;
+    const dropdown = acrossTTestKey
+      ? document.querySelector(`#tTestsAcross [data-test-filter-dropdown="${acrossTTestKey}"]`)
+      : document.querySelector(
+          `[data-test-filter-dropdown="${key}"], [data-overview-filter-dropdown="${key}"], [data-within-t-test-filter-dropdown="${key}"]`
+        );
     if (dropdown) dropdown.open = true;
   });
 }
@@ -586,6 +594,10 @@ function renderDirectionTableRows(items) {
   return summaries.map(item => {
     const { summary } = item;
     const share = key => summary.total ? fmtPct(summary[key] / summary.total) : "-";
+    const losses = item.rows.map(row => row.rel_rev_loss).filter(Number.isFinite);
+    const nearOptimal = losses.filter(loss => loss <= NEAR_OPTIMAL_THRESHOLD).length;
+    const severeLoss = losses.filter(loss => loss >= SEVERE_LOSS_THRESHOLD).length;
+    const lossShare = count => losses.length ? fmtPct(count / losses.length) : "-";
     return `
       <tr>
         <th>${item.label}</th>
@@ -593,6 +605,8 @@ function renderDirectionTableRows(items) {
         <td>${fmtInt(summary.under)} <span class="quiet">(${share("under")})</span></td>
         <td>${fmtInt(summary.similar)} <span class="quiet">(${share("similar")})</span></td>
         <td>${fmtInt(summary.over)} <span class="quiet">(${share("over")})</span></td>
+        <td>${fmtInt(nearOptimal)} <span class="quiet">(${lossShare(nearOptimal)})</span></td>
+        <td>${fmtInt(severeLoss)} <span class="quiet">(${lossShare(severeLoss)})</span></td>
       </tr>`;
   }).join("");
 }
@@ -920,30 +934,49 @@ function formatTestFilterSummary(field, available, selected) {
 function populateTestFilterControl(field) {
   const available = availableTestFilterValues(field);
   const selected = selectedTestFilterValues(field, available);
-  const host = document.querySelector(`[data-test-filter-list="${field}"]`);
-  const summary = document.querySelector(`[data-test-filter-summary="${field}"]`);
-  const menuSummary = document.querySelector(`[data-test-filter-menu-summary="${field}"]`);
+  const hosts = document.querySelectorAll(`[data-test-filter-list="${field}"]`);
+  const summaries = document.querySelectorAll(`[data-test-filter-summary="${field}"]`);
+  const menuSummaries = document.querySelectorAll(`[data-test-filter-menu-summary="${field}"]`);
 
-  if (!host || !summary || !menuSummary) return;
+  hosts.forEach(host => {
+    host.innerHTML = available.length
+      ? available.map(value => `
+          <label class="checkbox-chip">
+            <input type="checkbox" value="${value}" ${selected.includes(value) ? "checked" : ""}>
+            <span>${displayLevel(value)}</span>
+          </label>
+        `).join("")
+      : `<p class="quiet">No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} were found in the loaded data.</p>`;
+  });
+  summaries.forEach(summary => {
+    summary.textContent = available.length
+      ? formatTestFilterSummary(field, available, selected)
+      : `No ${GROUP_OPTIONS[field].toLowerCase()}`;
+  });
+  menuSummaries.forEach(menuSummary => {
+    menuSummary.textContent = available.length
+      ? (selected.length === available.length
+        ? `${allFieldLabel(field)} selected`
+        : `${fmtInt(selected.length)} of ${fmtInt(available.length)} ${FILTER_PLURAL_LABELS[field] || "items"} selected`)
+      : `No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} available`;
+  });
+}
 
-  if (!available.length) {
-    host.innerHTML = `<p class="quiet">No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} were found in the loaded data.</p>`;
-    summary.textContent = `No ${GROUP_OPTIONS[field].toLowerCase()}`;
-    menuSummary.textContent = `No ${FILTER_PLURAL_LABELS[field] || GROUP_OPTIONS[field].toLowerCase()} available`;
-    return;
-  }
+function setupAcrossTTestFilterPanel() {
+  const panel = document.querySelector("#tTestAcrossFilterPanel");
+  const source = document.querySelector("#tests .test-selection-toolbar");
+  if (!panel || !source || panel.dataset.ready === "true") return;
 
-  host.innerHTML = available.map(value => `
-    <label class="checkbox-chip">
-      <input type="checkbox" value="${value}" ${selected.includes(value) ? "checked" : ""}>
-      <span>${displayLevel(value)}</span>
-    </label>
-  `).join("");
-
-  summary.textContent = formatTestFilterSummary(field, available, selected);
-  menuSummary.textContent = selected.length === available.length
-    ? `${allFieldLabel(field)} selected`
-    : `${fmtInt(selected.length)} of ${fmtInt(available.length)} ${FILTER_PLURAL_LABELS[field] || "items"} selected`;
+  source.querySelectorAll(".multi-select-filter").forEach(filter => {
+    panel.append(filter.cloneNode(true));
+  });
+  const reset = document.createElement("button");
+  reset.id = "resetTTestAcrossFilters";
+  reset.className = "secondary-button";
+  reset.type = "button";
+  reset.textContent = "Reset selection";
+  panel.append(reset);
+  panel.dataset.ready = "true";
 }
 
 function populateOverviewFilterControl(field) {
@@ -1136,11 +1169,22 @@ function populateWithinTestControls() {
   }
 }
 
-function availableTTestMethods() {
+function hasStaticOnlyTestFilter() {
+  const scenarios = selectedTestFilterValues(
+    "scenario_subtype",
+    availableTestFilterValues("scenario_subtype")
+  );
+  return scenarios.length === 1 && scenarios[0] === "static";
+}
+
+function availableTTestMethods(includeRegression = false) {
   const hasHeuristic = rows.some(row => Number.isFinite(row.heuristic_rel_rev_loss));
-  return ACROSS_CHART_ORDER.filter(method =>
+  const methods = ACROSS_CHART_ORDER.filter(method =>
     method === HEURISTIC_LABEL ? hasHeuristic : models.includes(method)
   );
+  return includeRegression && hasStaticOnlyTestFilter()
+    ? [...methods, REGRESSION_LABEL]
+    : methods;
 }
 
 function selectedTTestMethodValues(available = availableTTestMethods(), minimumCount = 2) {
@@ -1155,9 +1199,7 @@ function selectedTTestMethodValues(available = availableTTestMethods(), minimumC
 
 function tTestCasesForMethods(methods) {
   const completed = completeCases(comparableCases(passesTestFilters));
-  return methods.includes(HEURISTIC_LABEL)
-    ? completed.filter(caseRows => Number.isFinite(heuristicLoss(caseRows)))
-    : completed;
+  return completed.filter(caseRows => methods.every(method => Number.isFinite(benchmarkLoss(caseRows, method))));
 }
 
 function passesTTestRowFilters(row, excludedFields = []) {
@@ -2582,7 +2624,7 @@ function tTestPairs(methods) {
 }
 
 function pairedEvidenceForMethods(caseRows, modelA, modelB, seed) {
-  return modelA === HEURISTIC_LABEL || modelB === HEURISTIC_LABEL
+  return modelA === HEURISTIC_LABEL || modelB === HEURISTIC_LABEL || modelA === REGRESSION_LABEL || modelB === REGRESSION_LABEL
     ? pairedBenchmarkEvidence(caseRows, modelA, modelB, seed)
     : pairedDifferenceEvidence(caseRows, modelA, modelB, seed);
 }
@@ -2730,7 +2772,9 @@ function populateWithinTTestExtraFilterControls(methods) {
 }
 
 function populateAcrossTTestControls() {
-  const availableMethods = availableTTestMethods();
+  setupAcrossTTestFilterPanel();
+  populateTestFilterControls();
+  const availableMethods = availableTTestMethods(true);
   selectedTTestModels = selectedValuesOrAll(selectedTTestModels, availableMethods, 2);
 
   const modelHost = document.querySelector("#tTestAcrossModelList");
@@ -2744,7 +2788,7 @@ function populateAcrossTTestControls() {
       `).join("")
     : `<p class="quiet">No models available.</p>`;
   modelSummary.textContent = availableMethods.length
-    ? `${fmtInt(selectedTTestModels.length)} of ${fmtInt(availableMethods.length)} models selected`
+    ? `${fmtInt(selectedTTestModels.length)} of ${fmtInt(availableMethods.length)} models selected${hasStaticOnlyTestFilter() ? "; Regression is available for static only" : "; Regression is available when Scenario is static only"}`
     : "No models available";
 
   const validFields = Object.keys(GROUP_OPTIONS).filter(field =>
@@ -2844,8 +2888,11 @@ function renderAcrossTTests() {
   }
 
   const pairs = tTestPairs(selectedMethods);
+  const regressionBaseCaseCount = selectedMethods.includes(REGRESSION_LABEL)
+    ? new Set(caseRows.map(caseRows => Object.values(caseRows).find(row => row?.instance_id)?.instance_id).filter(Boolean)).size
+    : 0;
   document.querySelector("#tTestsAcrossNote").innerHTML =
-    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.</span>`;
+    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.${selectedMethods.includes(REGRESSION_LABEL) ? ` Regression is available only for static and uses ${fmtInt(regressionBaseCaseCount)} unique regression instances repeated across the prompt variants.` : ""}</span>`;
 
   const overallRows = pairs.map(([modelA, modelB], index) => ({
     modelA,
@@ -4168,7 +4215,8 @@ document.addEventListener("click", event => {
     const available = availableTestFilterValues(field);
     const selected = selectedTestFilterValues(field, available);
     selectedTestFilters[field] = selected.length === available.length ? [] : [...available];
-    rerenderWithOpenDropdowns(render);
+    const renderer = resetButton.closest("#tTestsAcross") ? renderAcrossTTests : render;
+    rerenderWithOpenDropdowns(renderer);
     return;
   }
 
@@ -4178,13 +4226,13 @@ document.addEventListener("click", event => {
   });
 });
 
-document.querySelectorAll("[data-test-filter-list]").forEach(host => {
-  host.addEventListener("change", event => {
-    if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
-    const field = host.dataset.testFilterList;
-    selectedTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
-    rerenderWithOpenDropdowns(render);
-  });
+document.addEventListener("change", event => {
+  const host = event.target.closest("[data-test-filter-list]");
+  if (!host || !(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  const field = host.dataset.testFilterList;
+  selectedTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
+  const renderer = host.closest("#tTestsAcross") ? renderAcrossTTests : render;
+  rerenderWithOpenDropdowns(renderer);
 });
 
 document.addEventListener("change", event => {
@@ -4205,6 +4253,12 @@ document.querySelector("#resetTestFilters").addEventListener("click", () => {
   render();
 });
 
+document.addEventListener("click", event => {
+  if (!event.target.closest("#resetTTestAcrossFilters")) return;
+  selectedTestFilters = {};
+  renderAcrossTTests();
+});
+
 document.querySelector("#tTestAcrossModelList").addEventListener("change", event => {
   if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
   selectedTTestModels = [...document.querySelectorAll("#tTestAcrossModelList input:checked")]
@@ -4213,7 +4267,7 @@ document.querySelector("#tTestAcrossModelList").addEventListener("change", event
 });
 
 document.querySelector("#tTestAcrossModelReset").addEventListener("click", () => {
-  selectedTTestModels = availableTTestMethods();
+  selectedTTestModels = availableTTestMethods(true);
   renderAcrossTTests();
 });
 

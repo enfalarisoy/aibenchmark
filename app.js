@@ -44,11 +44,11 @@ const MODEL_META = {
   "Gemini 2.5 Flash": { colorClass: "model-gemini", short: "Gemini" },
   "Claude Haiku 4.5": { colorClass: "model-claude", short: "Claude" },
   "Heuristic": { colorClass: "model-heuristic", short: "Heuristic" },
-  "Regression": { colorClass: "model-regression", short: "Regression" },
+  "Regression Heuristic": { colorClass: "model-regression", short: "Regression Heuristic" },
 };
 
 const HEURISTIC_LABEL = "Heuristic";
-const REGRESSION_LABEL = "Regression";
+const REGRESSION_LABEL = "Regression Heuristic";
 const ACROSS_CHART_ORDER = ["Gemini 2.5 Flash", "Claude Haiku 4.5", "GPT-5 mini", HEURISTIC_LABEL];
 const PRICE_DIRECTION_TOLERANCE = 0.05;
 const NEAR_OPTIMAL_THRESHOLD = 0.05;
@@ -513,7 +513,7 @@ function directionSummary(sourceRows) {
 }
 
 function directionBreakdown(items) {
-  return items.map(item => ({ ...item, summary: directionSummary(item.rows) }));
+  return items.map(item => ({ ...item, summary: item.summary || directionSummary(item.rows || []) }));
 }
 
 function renderDirectionBars(items) {
@@ -594,7 +594,7 @@ function renderDirectionTableRows(items) {
   return summaries.map(item => {
     const { summary } = item;
     const share = key => summary.total ? fmtPct(summary[key] / summary.total) : "-";
-    const losses = item.rows.map(row => row.rel_rev_loss).filter(Number.isFinite);
+    const losses = (item.losses || (item.rows || []).map(row => row.rel_rev_loss)).filter(Number.isFinite);
     const nearOptimal = losses.filter(loss => loss <= NEAR_OPTIMAL_THRESHOLD).length;
     const severeLoss = losses.filter(loss => loss >= SEVERE_LOSS_THRESHOLD).length;
     const lossShare = count => losses.length ? fmtPct(count / losses.length) : "-";
@@ -797,16 +797,18 @@ function percentAxisConfig(values, options = {}) {
   return { yMax, yTicks };
 }
 
-function renderAcrossDistributionMeanPanels(caseRows) {
+function renderAcrossDistributionMeanPanels(caseRows, methods = ACROSS_CHART_ORDER) {
   const levels = [...new Set(caseRows.map(caseRows => levelValue(caseRows[models[0]]?.demand_model)))].sort((a, b) =>
     displayLevel(a).localeCompare(displayLevel(b))
   );
   if (!levels.length) return `<p class="quiet">No complete matched cases available.</p>`;
 
   return levels.map(level => {
-    const cases = caseRows.filter(caseRows => levelValue(caseRows[models[0]]?.demand_model) === level)
-      .filter(caseRows => Number.isFinite(heuristicLoss(caseRows)));
-    const items = ACROSS_CHART_ORDER.map(model => ({
+    const cases = caseRows.filter(caseRows =>
+      levelValue(caseRows[models[0]]?.demand_model) === level
+      && methods.every(method => Number.isFinite(benchmarkLoss(caseRows, method)))
+    );
+    const items = methods.map(model => ({
       model,
       n: cases.length,
       meanLoss: mean(benchmarkLosses(cases, model)),
@@ -2479,34 +2481,37 @@ function renderTests() {
   populateTestFilterControls();
   const cases = comparableCases(passesTestFilters);
   const completed = completeCases(cases);
-  const benchmarkCases = completed.filter(caseRows => Number.isFinite(heuristicLoss(caseRows)));
+  const showRegression = hasStaticOnlyTestFilter();
+  const benchmarkCases = completed.filter(caseRows =>
+    Number.isFinite(heuristicLoss(caseRows))
+    && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
+  );
+  const comparisonCases = showRegression ? benchmarkCases : completed;
+  const benchmarkMethods = showRegression
+    ? [...models, HEURISTIC_LABEL, REGRESSION_LABEL]
+    : [...models, HEURISTIC_LABEL];
+  const displayedMethods = showRegression
+    ? [...ACROSS_CHART_ORDER, REGRESSION_LABEL]
+    : ACROSS_CHART_ORDER;
   const activeFilters = activeTestFilterLabels();
   document.querySelector("#caseCount").textContent = fmtInt(cases.length);
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
   document.querySelector("#testsNote").innerHTML =
-    `<strong>${fmtInt(completed.length)} complete paired LLM cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Heuristic mean loss uses ${fmtInt(benchmarkCases.length)} of those same cases with a valid heuristic benchmark. Mean differences are first method minus second method; negative values favor the first method.</span>`;
+    `<strong>${fmtInt(comparisonCases.length)} complete matched cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}.${showRegression ? ` Regression Heuristic is included for the ${fmtInt(benchmarkCases.length)} static cases with an eligible regression output.` : ` Heuristic mean loss uses ${fmtInt(benchmarkCases.length)} of those same cases with a valid heuristic benchmark.`} Mean differences are first method minus second method; negative values favor the first method.</span>`;
 
   renderDensityPlot(completed);
   renderCdfPlot(completed);
   renderDifferenceDensityPlot(completed);
 
-  const modelPairResults = modelPairs().map(([modelA, modelB], index) => ({
+  const pairResults = tTestPairs(benchmarkMethods).map(([modelA, modelB], index) => ({
     modelA,
     modelB,
-    result: pairedDifferenceEvidence(completed, modelA, modelB, 92821 + index * 101),
+    result: pairedEvidenceForMethods(comparisonCases, modelA, modelB, 92821 + index * 101),
   }));
 
-  const heuristicPairResults = models.map((model, index) => ({
-    modelA: model,
-    modelB: HEURISTIC_LABEL,
-    result: pairedBenchmarkEvidence(benchmarkCases, model, HEURISTIC_LABEL, 94421 + index * 101),
-  }));
-  const pairResults = [...modelPairResults, ...heuristicPairResults];
-
-  const benchmarkMethods = [...models, HEURISTIC_LABEL];
   const benchmarkSummaries = benchmarkMethods.map(model => {
-    const losses = benchmarkLosses(model === HEURISTIC_LABEL ? benchmarkCases : completed, model);
+    const losses = benchmarkLosses(comparisonCases, model);
     return {
       model,
       n: losses.length,
@@ -2529,7 +2534,7 @@ function renderTests() {
     .sort((a, b) => a.severeLossRate - b.severeLossRate)[0]?.model;
 
   document.querySelector("#acrossPairMeanBars").innerHTML = renderAcrossMeanChart(
-    ACROSS_CHART_ORDER
+    displayedMethods
       .map(method => benchmarkSummaries.find(item => item.model === method))
       .filter(Boolean)
       .map(item => ({
@@ -2540,7 +2545,7 @@ function renderTests() {
   );
 
   document.querySelector("#nearOptimalBars").innerHTML = renderAcrossRateChart(
-    ACROSS_CHART_ORDER
+    displayedMethods
       .map(method => benchmarkSummaries.find(item => item.model === method))
       .filter(Boolean),
     {
@@ -2550,7 +2555,7 @@ function renderTests() {
   );
 
   document.querySelector("#severeLossBars").innerHTML = renderAcrossRateChart(
-    ACROSS_CHART_ORDER
+    displayedMethods
       .map(method => benchmarkSummaries.find(item => item.model === method))
       .filter(Boolean),
     {
@@ -2559,12 +2564,20 @@ function renderTests() {
     }
   );
 
-  document.querySelector("#acrossDistributionMeanBars").innerHTML = renderAcrossDistributionMeanPanels(completed);
+  document.querySelector("#acrossDistributionMeanBars").innerHTML = renderAcrossDistributionMeanPanels(comparisonCases, displayedMethods);
 
-  const matchedDirectionItems = models.map(model => ({
-    label: model,
-    rows: completed.map(caseRows => caseRows[model]),
-  }));
+  const matchedDirectionItems = benchmarkMethods.map(model => {
+    const summary = comparisonCases.reduce((counts, caseRows) => {
+      const direction = benchmarkPriceDirection(caseRows, model);
+      if (direction) counts[direction] += 1;
+      return counts;
+    }, { under: 0, similar: 0, over: 0 });
+    return {
+      label: model,
+      summary: { ...summary, total: summary.under + summary.similar + summary.over },
+      losses: benchmarkLosses(comparisonCases, model),
+    };
+  });
 
   document.querySelector("#acrossDirectionMatched").innerHTML = renderDirectionBars(matchedDirectionItems);
   document.querySelector("#acrossDirectionMatchedTable tbody").innerHTML = renderDirectionTableRows(matchedDirectionItems);
@@ -2788,7 +2801,7 @@ function populateAcrossTTestControls() {
       `).join("")
     : `<p class="quiet">No models available.</p>`;
   modelSummary.textContent = availableMethods.length
-    ? `${fmtInt(selectedTTestModels.length)} of ${fmtInt(availableMethods.length)} models selected${hasStaticOnlyTestFilter() ? "; Regression is available for static only" : "; Regression is available when Scenario is static only"}`
+    ? `${fmtInt(selectedTTestModels.length)} of ${fmtInt(availableMethods.length)} models selected${hasStaticOnlyTestFilter() ? "; Regression Heuristic is available for static only" : "; Regression Heuristic is available when Scenario is static only"}`
     : "No models available";
 
   const validFields = Object.keys(GROUP_OPTIONS).filter(field =>
@@ -2892,7 +2905,7 @@ function renderAcrossTTests() {
     ? new Set(caseRows.map(caseRows => Object.values(caseRows).find(row => row?.instance_id)?.instance_id).filter(Boolean)).size
     : 0;
   document.querySelector("#tTestsAcrossNote").innerHTML =
-    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.${selectedMethods.includes(REGRESSION_LABEL) ? ` Regression is available only for static and uses ${fmtInt(regressionBaseCaseCount)} unique regression instances repeated across the prompt variants.` : ""}</span>`;
+    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.${selectedMethods.includes(REGRESSION_LABEL) ? ` Regression Heuristic is available only for static and uses ${fmtInt(regressionBaseCaseCount)} unique regression instances repeated across the prompt variants.` : ""}</span>`;
 
   const overallRows = pairs.map(([modelA, modelB], index) => ({
     modelA,
@@ -3256,7 +3269,7 @@ function renderOverview() {
         || a.model.localeCompare(b.model)
     );
   document.querySelector("#overviewNote").innerHTML =
-    `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression is included only for the eligible static fits." : ""}</span>`;
+    `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression Heuristic</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression Heuristic is included only for the eligible static fits." : ""}</span>`;
 
   document.querySelector("#overviewCaseLeaderboardTable tbody").innerHTML = rankedCaseLeaderboard.length
     ? rankedCaseLeaderboard.map((item, index) => `
@@ -3444,7 +3457,7 @@ function renderOverview() {
 
   if (overviewStaticNoteEl) {
     overviewStaticNoteEl.innerHTML = staticBenchmarkCompleted.length
-      ? `<strong>${fmtInt(staticBenchmarkCompleted.length)} filtered static benchmark cases with regression output</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This section keeps only the <strong>static</strong> cases from the current overview filter set and compares <strong>GPT</strong>, <strong>Gemini</strong>, <strong>Claude</strong>, <strong>Heuristic</strong>, and <strong>Regression</strong> on the same case set. Regression uses the absolute <strong>revenue gap</strong> from <strong>Revenue_hat</strong> to <strong>Revenue_star</strong> as its loss measure.</span>`
+      ? `<strong>${fmtInt(staticBenchmarkCompleted.length)} filtered static benchmark cases with regression output</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This section keeps only the <strong>static</strong> cases from the current overview filter set and compares <strong>GPT</strong>, <strong>Gemini</strong>, <strong>Claude</strong>, <strong>Heuristic</strong>, and <strong>Regression Heuristic</strong> on the same case set. Regression Heuristic uses the absolute <strong>revenue gap</strong> from <strong>Revenue_hat</strong> to <strong>Revenue_star</strong> as its loss measure.</span>`
       : `<strong>No static benchmark cases with regression output for the current filters</strong><span>Try including <strong>static</strong> in the scenario filter or relaxing the current overview filters.</span>`;
   }
 

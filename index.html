@@ -26,6 +26,7 @@
       <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
       <button class="tab" data-tab="tTestsAcross">T Tests (Across Models)</button>
       <button class="tab" data-tab="tTestsWithin">T Tests (Within Models)</button>
+      <button class="tab" data-tab="groundTruth">Ground Truth Curves</button>
     </nav>
 
     <section id="overview" class="panel">
@@ -963,6 +964,31 @@
       </article>
     </section>
 
+    <section id="groundTruth" class="panel">
+      <div class="toolbar card" aria-label="Ground truth curve controls">
+        <label>Benchmark case
+          <select id="groundTruthCasePicker"></select>
+        </label>
+      </div>
+      <article class="comparison-note card" id="groundTruthNote"></article>
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>True demand and recommended prices</h2>
+          <span>Ground-truth curve with the optimal price and model estimates</span>
+        </div>
+        <div id="groundTruthChart" class="ground-truth-chart"></div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Price estimates</h2>
+          <span>Recommended prices for the selected benchmark case</span>
+        </div>
+        <div class="table-wrap">
+          <table id="groundTruthEstimateTable"><thead><tr><th>Method</th><th>Recommended price</th><th>Difference from P*</th><th>Relative revenue loss</th></tr></thead><tbody></tbody></table>
+        </div>
+      </article>
+    </section>
+
     <section id="within" class="panel" hidden>
       <div class="toolbar card" aria-label="Within-model controls">
         <label>Group cases by
@@ -977,7 +1003,7 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>5.3</div>
+    <div>5.4</div>
   </footer>
   <script src="app.js?v=20260906b"></script>
 </body>

@@ -1080,6 +1080,12 @@ svg .model-fallback { fill: var(--tie); }
   overflow-x: auto;
 }
 
+.ground-truth-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .compact-table {
   margin-top: 14px;
 }

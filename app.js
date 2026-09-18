@@ -4,6 +4,8 @@ let models = [];
 let rowsByModel = new Map();
 let answeredRowsByModel = new Map();
 let regressionResultsById = new Map();
+let groundTruthByKey = new Map();
+let selectedGroundTruthKey = "";
 const withinFieldCache = new Map();
 const withinGroupSummaryCache = new Map();
 const tTestRowCache = new Map();
@@ -1691,6 +1693,7 @@ function rebuildDerivedIndexes() {
     models.map(model => [model, rows.filter(row => row.model === model && row.answered)])
   );
   regressionResultsById = new Map(Object.entries(payload.regression_results || {}));
+  groundTruthByKey = new Map(Object.entries(payload.ground_truth_instances || {}));
   withinFieldCache.clear();
   withinGroupSummaryCache.clear();
   tTestRowCache.clear();
@@ -4171,6 +4174,72 @@ function renderWithin() {
   ).join("");
 }
 
+function groundTruthDemand(entry, price, row) {
+  const model = entry.model;
+  let params = entry.params;
+  if (entry.dataset === "season") params = params[row?.next_env] || params.weekday || params.weekend;
+  let demand;
+  if (model === "linear") demand = params.a - params.b * price;
+  else if (model === "exponential") demand = params.a * Math.exp(-params.b * price);
+  else if (model === "logistic") demand = params.L / (1 + Math.exp(params.a + params.b * price));
+  else if (model === "log_log_capped") demand = Math.min(params.Q, Math.exp(params.a) * price ** (-params.b));
+  else if (model === "piecewise_linear") demand = price < params.breakpoint ? params.a1 - params.b1 * price : params.a2 - params.b2 * price;
+  else if (model === "piecewise_exponential") demand = price < params.breakpoint ? params.a1 * Math.exp(-params.b1 * price) : params.a2 * Math.exp(-params.b2 * price);
+  else if (model === "weibull") demand = params.A * Math.exp(-((price / params.lam) ** params.k));
+  else if (model === "empmixlogit") demand = params.N * params.components.reduce((sum, c) => sum + 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, c.a + c.b * price)))), 0) / params.components.length;
+  else demand = NaN;
+  if (entry.dataset === "duopoly") demand += entry.c1 * (entry.p1_true - price);
+  return Math.max(demand, 0);
+}
+
+function renderGroundTruth() {
+  const entries = [...groundTruthByKey.entries()].sort(([, a], [, b]) => `${a.dataset}/${a.id}`.localeCompare(`${b.dataset}/${b.id}`));
+  const picker = document.querySelector("#groundTruthCasePicker");
+  if (!entries.length) {
+    document.querySelector("#groundTruthNote").textContent = "No ground-truth curves were loaded with this dataset.";
+    return;
+  }
+  if (!entries.some(([key]) => key === selectedGroundTruthKey)) selectedGroundTruthKey = entries[0][0];
+  picker.innerHTML = entries.map(([key, entry]) => `<option value="${key}">${entry.dataset} · ${displayLevel(entry.model)} · ${entry.letter.toUpperCase()} · h=${entry.length} · sigma=${entry.sigma}</option>`).join("");
+  picker.value = selectedGroundTruthKey;
+  const entry = groundTruthByKey.get(selectedGroundTruthKey);
+  const scenario = entry.dataset === "season" ? "seasonal" : entry.dataset;
+  const caseRows = rows.filter(row => row.instance_id === entry.id && row.scenario_subtype === scenario);
+  const referenceRow = caseRows[0];
+  const summaries = models.map(model => {
+    const source = caseRows.filter(row => row.model === model && Number.isFinite(row.ai_answer));
+    return { model, price: mean(source.map(row => row.ai_answer)), loss: mean(source.map(row => row.rel_rev_loss)) };
+  });
+  const heuristicRows = caseRows.filter(row => Number.isFinite(row.heuristic_price));
+  summaries.push({ model: HEURISTIC_LABEL, price: mean(heuristicRows.map(row => row.heuristic_price)), loss: mean(heuristicRows.map(row => row.heuristic_rel_rev_loss)) });
+  if (entry.dataset === "static") {
+    const regression = regressionResultsById.get(entry.id);
+    if (regression?.fit_status !== "infeasible" && Number.isFinite(regression?.p_hat)) summaries.push({ model: REGRESSION_LABEL, price: regression.p_hat, loss: Math.abs(regression.revenue_pct_gap) });
+  }
+  const pMin = Math.max(0.01, entry.p_star * 0.4);
+  const pMax = entry.p_star * 1.8;
+  const points = Array.from({ length: 121 }, (_, index) => {
+    const price = pMin + (pMax - pMin) * index / 120;
+    return [price, groundTruthDemand(entry, price, referenceRow)];
+  });
+  const maxDemand = Math.max(...points.map(point => point[1]), 1);
+  const width = 920, height = 440, margin = { left: 78, right: 24, top: 36, bottom: 66 };
+  const x = value => margin.left + (value - pMin) / (pMax - pMin) * (width - margin.left - margin.right);
+  const y = value => height - margin.bottom - value / maxDemand * (height - margin.top - margin.bottom);
+  const curve = points.map(([price, demand], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${y(demand).toFixed(1)}`).join(" ");
+  const markers = summaries.filter(item => Number.isFinite(item.price)).map((item, index) => {
+    const color = ["#4677c6", "#ca6b96", "#e68a3b", "#4d8f68", "#7a5ca5"][index];
+    return `<line x1="${x(item.price)}" x2="${x(item.price)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="${color}" stroke-width="2" stroke-dasharray="5 4"/>`;
+  }).join("");
+  const priceTicks = Array.from({ length: 6 }, (_, index) => pMin + (pMax - pMin) * index / 5);
+  const xAxis = priceTicks.map(price => `<line x1="${x(price)}" x2="${x(price)}" y1="${height - margin.bottom}" y2="${height - margin.bottom + 6}" stroke="#4c5966"/><text x="${x(price)}" y="${height - margin.bottom + 24}" text-anchor="middle" font-size="12">${price.toFixed(0)}</text>`).join("");
+  const legendItems = [{ label: "True demand", color: "#1f5f98" }, { label: "P*", color: "#d94f45" }, ...summaries.map((item, index) => ({ label: modelMeta(item.model).short, color: ["#4677c6", "#ca6b96", "#e68a3b", "#4d8f68", "#7a5ca5"][index] }))];
+  const legend = legendItems.map((item, index) => { const lx = 92 + index * 130; return `<line x1="${lx}" x2="${lx + 18}" y1="18" y2="18" stroke="${item.color}" stroke-width="3"/><text x="${lx + 24}" y="22" font-size="12" fill="#334155">${item.label}</text>`; }).join("");
+  document.querySelector("#groundTruthChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth demand curve and model price estimates">${legend}<path d="${curve}" fill="none" stroke="#1f5f98" stroke-width="3"/><line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth demand</text></svg>`;
+  document.querySelector("#groundTruthNote").innerHTML = `<strong>${entry.dataset} · ${displayLevel(entry.model)} · parameter ${entry.letter.toUpperCase()}</strong><span>Curve uses the supplied ground-truth parameters. Colored markers are mean recommended prices across the prompt variants for this instance.${entry.dataset === "duopoly" ? ` The curve holds competitor price at ${entry.p1_true.toFixed(2)}.` : ""}</span>`;
+  document.querySelector("#groundTruthEstimateTable tbody").innerHTML = summaries.map(item => `<tr><th>${modelMeta(item.model).short}</th><td>${item.price.toFixed(2)}</td><td>${(item.price - entry.p_star).toFixed(2)}</td><td>${fmtLoss(item.loss)}</td></tr>`).join("");
+}
+
 function render() {
   if (selectedTab === "overview") renderOverview();
   if (selectedTab === "across") renderAcross();
@@ -4179,6 +4248,7 @@ function render() {
   if (selectedTab === "tTestsWithin") renderWithinTTests();
   if (selectedTab === "withinTests") renderWithinTests();
   if (selectedTab === "within") renderWithin();
+  if (selectedTab === "groundTruth") renderGroundTruth();
 }
 
 document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => {
@@ -4188,6 +4258,11 @@ document.querySelectorAll(".tab").forEach(button => button.addEventListener("cli
   document.querySelector(`#${selectedTab}`).classList.add("active");
   render();
 }));
+
+document.querySelector("#groundTruthCasePicker").addEventListener("change", event => {
+  selectedGroundTruthKey = event.target.value;
+  renderGroundTruth();
+});
 
 document.querySelector("#groupPicker").addEventListener("change", event => {
   selectedGroup = event.target.value;

@@ -235,9 +235,27 @@ function heuristicLoss(caseRows) {
   return sourceRow ? sourceRow.heuristic_rel_rev_loss : NaN;
 }
 
+function regressionKey(row) {
+  const scenario = row?.scenario_subtype;
+  const instanceId = row?.instance_id;
+  return scenario && instanceId ? `${scenario}/${instanceId}` : "";
+}
+
+function regressionForRow(row) {
+  return regressionResultsById.get(regressionKey(row)) || null;
+}
+
+function regressionForCaseRows(caseRows) {
+  return regressionForRow(Object.values(caseRows).find(row => row?.instance_id));
+}
+
+function hasRegressionForScenarios(scenarios) {
+  const availableScenarios = new Set([...regressionResultsById.values()].map(item => item.scenario_subtype));
+  return scenarios.length > 0 && scenarios.every(scenario => availableScenarios.has(scenario));
+}
+
 function regressionLoss(caseRows) {
-  const sourceRow = Object.values(caseRows).find(row => row?.instance_id);
-  const regression = sourceRow?.instance_id ? regressionResultsById.get(sourceRow.instance_id) : null;
+  const regression = regressionForCaseRows(caseRows);
   return regression?.fit_status !== "infeasible" && Number.isFinite(regression?.revenue_pct_gap)
     ? Math.abs(regression.revenue_pct_gap)
     : NaN;
@@ -481,8 +499,7 @@ function priceDirection(row) {
 
 function benchmarkPriceDirection(caseRows, method) {
   if (method === REGRESSION_LABEL) {
-    const sourceRow = Object.values(caseRows).find(row => row?.instance_id);
-    const regression = sourceRow?.instance_id ? regressionResultsById.get(sourceRow.instance_id) : null;
+    const regression = regressionForCaseRows(caseRows);
     if (!regressionIsEligible(regression) || !Number.isFinite(regression?.p_hat) || !Number.isFinite(regression?.p_star) || regression.p_star === 0) {
       return null;
     }
@@ -1173,12 +1190,12 @@ function populateWithinTestControls() {
   }
 }
 
-function hasStaticOnlyTestFilter() {
+function hasRegressionForCurrentTestFilters() {
   const scenarios = selectedTestFilterValues(
     "scenario_subtype",
     availableTestFilterValues("scenario_subtype")
   );
-  return scenarios.length === 1 && scenarios[0] === "static";
+  return hasRegressionForScenarios(scenarios);
 }
 
 function availableTTestMethods(includeRegression = false) {
@@ -1186,7 +1203,7 @@ function availableTTestMethods(includeRegression = false) {
   const methods = ACROSS_CHART_ORDER.filter(method =>
     method === HEURISTIC_LABEL ? hasHeuristic : models.includes(method)
   );
-  return includeRegression && hasStaticOnlyTestFilter()
+  return includeRegression && hasRegressionForCurrentTestFilters()
     ? [...methods, REGRESSION_LABEL]
     : methods;
 }
@@ -1629,7 +1646,7 @@ function regressionResultsForOverview() {
   });
 
   return [...rowsByInstance.entries()].map(([instanceId, sourceRow]) => {
-    const regression = regressionResultsById.get(instanceId);
+    const regression = regressionForRow(sourceRow);
     if (!regression) return null;
     return {
       ...regression,
@@ -2484,7 +2501,7 @@ function renderTests() {
   populateTestFilterControls();
   const cases = comparableCases(passesTestFilters);
   const completed = completeCases(cases);
-  const showRegression = hasStaticOnlyTestFilter();
+  const showRegression = hasRegressionForCurrentTestFilters();
   const benchmarkCases = completed.filter(caseRows =>
     Number.isFinite(heuristicLoss(caseRows))
     && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
@@ -2804,7 +2821,7 @@ function populateAcrossTTestControls() {
       `).join("")
     : `<p class="quiet">No models available.</p>`;
   modelSummary.textContent = availableMethods.length
-    ? `${fmtInt(selectedTTestModels.length)} of ${fmtInt(availableMethods.length)} models selected${hasStaticOnlyTestFilter() ? "; Regression Heuristic is available for static only" : "; Regression Heuristic is available when Scenario is static only"}`
+    ? `${fmtInt(selectedTTestModels.length)} of ${fmtInt(availableMethods.length)} models selected${hasRegressionForCurrentTestFilters() ? "; Regression Heuristic is available for the selected scenarios" : "; Regression Heuristic requires scenarios with regression results"}`
     : "No models available";
 
   const validFields = Object.keys(GROUP_OPTIONS).filter(field =>
@@ -2905,10 +2922,10 @@ function renderAcrossTTests() {
 
   const pairs = tTestPairs(selectedMethods);
   const regressionBaseCaseCount = selectedMethods.includes(REGRESSION_LABEL)
-    ? new Set(caseRows.map(caseRows => Object.values(caseRows).find(row => row?.instance_id)?.instance_id).filter(Boolean)).size
+    ? new Set(caseRows.map(caseRows => regressionKey(Object.values(caseRows).find(row => row?.instance_id))).filter(Boolean)).size
     : 0;
   document.querySelector("#tTestsAcrossNote").innerHTML =
-    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.${selectedMethods.includes(REGRESSION_LABEL) ? ` Regression Heuristic is available only for static and uses ${fmtInt(regressionBaseCaseCount)} unique regression instances repeated across the prompt variants.` : ""}</span>`;
+    `<strong>${fmtInt(caseRows.length)} matched cases for t tests</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${fmtInt(selectedMethods.length)}</strong> models across <strong>${GROUP_OPTIONS[selectedTTestField] || "selected variable"}</strong>. Mean differences are first method minus second method; negative values favor the first method.${selectedMethods.includes(REGRESSION_LABEL) ? ` Regression Heuristic uses ${fmtInt(regressionBaseCaseCount)} unique regression instances repeated across the prompt variants.` : ""}</span>`;
 
   const overallRows = pairs.map(([modelA, modelB], index) => ({
     modelA,
@@ -3209,7 +3226,7 @@ function renderOverview() {
     "scenario_subtype",
     availableOverviewFilterValues("scenario_subtype")
   );
-  const showRegression = overviewScenarioValues.length === 1 && overviewScenarioValues[0] === "static";
+  const showRegression = hasRegressionForScenarios(overviewScenarioValues);
   const baseOverviewMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
   const overviewMethods = showRegression ? [...baseOverviewMethods, REGRESSION_LABEL] : baseOverviewMethods;
   const benchmarkCompleted = completed.filter(caseRows =>
@@ -3217,7 +3234,7 @@ function renderOverview() {
     && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
   );
   const regressionItems = regressionResultsForOverview();
-  const regressionTotal = regressionResultsById.size;
+  const regressionTotal = [...regressionResultsById.values()].filter(item => item.scenario_subtype === "static").length;
   const eligibleRegressionItems = regressionItems.filter(regressionIsEligible);
   const infeasibleRegressionItems = regressionItems.filter(item => !regressionIsEligible(item));
   const overviewSimilarPricingTableBody = document.querySelector("#overviewSimilarPricingTable tbody");
@@ -3234,7 +3251,7 @@ function renderOverview() {
   const regressionRevenueTableBody = document.querySelector("#overviewRegressionRevenueTable tbody");
   const regressionSection = document.querySelector("#overviewRegressionSection");
 
-  if (regressionSection) regressionSection.hidden = !showRegression;
+  if (regressionSection) regressionSection.hidden = !overviewScenarioValues.includes("static");
 
   document.querySelector("#caseCount").textContent = fmtInt(cases.length);
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
@@ -3272,7 +3289,7 @@ function renderOverview() {
         || a.model.localeCompare(b.model)
     );
   document.querySelector("#overviewNote").innerHTML =
-    `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression Heuristic</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression Heuristic is included only for the eligible static fits." : ""}</span>`;
+    `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression Heuristic</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression Heuristic is included for eligible fits in the selected scenarios." : ""}</span>`;
 
   document.querySelector("#overviewCaseLeaderboardTable tbody").innerHTML = rankedCaseLeaderboard.length
     ? rankedCaseLeaderboard.map((item, index) => `
@@ -4212,21 +4229,37 @@ function renderGroundTruth() {
   });
   const heuristicRows = caseRows.filter(row => Number.isFinite(row.heuristic_price));
   summaries.push({ model: HEURISTIC_LABEL, price: mean(heuristicRows.map(row => row.heuristic_price)), loss: mean(heuristicRows.map(row => row.heuristic_rel_rev_loss)) });
-  if (entry.dataset === "static") {
-    const regression = regressionResultsById.get(entry.id);
-    if (regression?.fit_status !== "infeasible" && Number.isFinite(regression?.p_hat)) summaries.push({ model: REGRESSION_LABEL, price: regression.p_hat, loss: Math.abs(regression.revenue_pct_gap) });
+  const regression = regressionForRow(referenceRow);
+  if (regression?.fit_status !== "infeasible" && Number.isFinite(regression?.p_hat)) {
+    summaries.push({ model: REGRESSION_LABEL, price: regression.p_hat, loss: Math.abs(regression.revenue_pct_gap) });
   }
-  const pMin = Math.max(0.01, entry.p_star * 0.4);
-  const pMax = entry.p_star * 1.8;
+  const revenueAt = price => price * groundTruthDemand(entry, price, referenceRow);
+  const revenueAtOptimalPrice = revenueAt(entry.p_star);
+  summaries.forEach(item => {
+    item.revenue = Number.isFinite(item.price) ? revenueAt(item.price) : NaN;
+    item.revenueGap = revenueAtOptimalPrice ? (item.revenue - revenueAtOptimalPrice) / revenueAtOptimalPrice : NaN;
+  });
+  // Keep every displayed recommendation inside both charts, including extreme estimates.
+  const displayedPrices = [entry.p_star, ...summaries.map(item => item.price)]
+    .filter(price => Number.isFinite(price) && price > 0);
+  const displayedMinPrice = Math.min(...displayedPrices);
+  const displayedMaxPrice = Math.max(...displayedPrices);
+  const pricePadding = Math.max((displayedMaxPrice - displayedMinPrice) * 0.1, entry.p_star * 0.05, 0.5);
+  const pMin = Math.max(0.01, displayedMinPrice - pricePadding);
+  const pMax = displayedMaxPrice + pricePadding;
   const points = Array.from({ length: 121 }, (_, index) => {
     const price = pMin + (pMax - pMin) * index / 120;
     return [price, groundTruthDemand(entry, price, referenceRow)];
   });
   const maxDemand = Math.max(...points.map(point => point[1]), 1);
+  const revenuePoints = points.map(([price, demand]) => [price, price * demand]);
+  const maxRevenue = Math.max(...revenuePoints.map(point => point[1]), 1);
   const width = 920, height = 440, margin = { left: 78, right: 24, top: 36, bottom: 66 };
   const x = value => margin.left + (value - pMin) / (pMax - pMin) * (width - margin.left - margin.right);
   const y = value => height - margin.bottom - value / maxDemand * (height - margin.top - margin.bottom);
   const curve = points.map(([price, demand], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${y(demand).toFixed(1)}`).join(" ");
+  const revenueY = value => height - margin.bottom - value / maxRevenue * (height - margin.top - margin.bottom);
+  const revenueCurve = revenuePoints.map(([price, revenue], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${revenueY(revenue).toFixed(1)}`).join(" ");
   const markers = summaries.filter(item => Number.isFinite(item.price)).map((item, index) => {
     const color = ["#4677c6", "#ca6b96", "#e68a3b", "#4d8f68", "#7a5ca5"][index];
     return `<line x1="${x(item.price)}" x2="${x(item.price)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="${color}" stroke-width="2" stroke-dasharray="5 4"/>`;
@@ -4236,8 +4269,31 @@ function renderGroundTruth() {
   const legendItems = [{ label: "True demand", color: "#1f5f98" }, { label: "P*", color: "#d94f45" }, ...summaries.map((item, index) => ({ label: modelMeta(item.model).short, color: ["#4677c6", "#ca6b96", "#e68a3b", "#4d8f68", "#7a5ca5"][index] }))];
   const legend = legendItems.map((item, index) => { const lx = 92 + index * 130; return `<line x1="${lx}" x2="${lx + 18}" y1="18" y2="18" stroke="${item.color}" stroke-width="3"/><text x="${lx + 24}" y="22" font-size="12" fill="#334155">${item.label}</text>`; }).join("");
   document.querySelector("#groundTruthChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth demand curve and model price estimates">${legend}<path d="${curve}" fill="none" stroke="#1f5f98" stroke-width="3"/><line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth demand</text></svg>`;
-  document.querySelector("#groundTruthNote").innerHTML = `<strong>${entry.dataset} · ${displayLevel(entry.model)} · parameter ${entry.letter.toUpperCase()}</strong><span>Curve uses the supplied ground-truth parameters. Colored markers are mean recommended prices across the prompt variants for this instance.${entry.dataset === "duopoly" ? ` The curve holds competitor price at ${entry.p1_true.toFixed(2)}.` : ""}</span>`;
-  document.querySelector("#groundTruthEstimateTable tbody").innerHTML = summaries.map(item => `<tr><th>${modelMeta(item.model).short}</th><td>${item.price.toFixed(2)}</td><td>${(item.price - entry.p_star).toFixed(2)}</td><td>${fmtLoss(item.loss)}</td></tr>`).join("");
+  document.querySelector("#groundTruthRevenueChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth revenue curve and model price estimates">${legend}<path d="${revenueCurve}" fill="none" stroke="#1f5f98" stroke-width="3"/><line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P* / R*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth revenue</text></svg>`;
+  document.querySelector("#groundTruthNote").innerHTML = `<strong>${entry.dataset} · ${displayLevel(entry.model)} · parameter ${entry.letter.toUpperCase()}</strong><span>Curves use the supplied ground-truth parameters. Colored markers are mean recommended prices across the prompt variants for this instance; the price range expands automatically to include every displayed estimate.${entry.dataset === "duopoly" ? ` The curve holds competitor price at ${entry.p1_true.toFixed(2)}.` : ""}</span>`;
+  document.querySelector("#groundTruthEstimateTable tbody").innerHTML = summaries.map(item => `<tr><th>${modelMeta(item.model).short}</th><td>${item.price.toFixed(2)}</td><td>${(item.price - entry.p_star).toFixed(2)}</td><td>${fmtNum(item.revenue)}</td><td>${fmtPct(item.revenueGap)}</td><td>${fmtLoss(item.loss)}</td></tr>`).join("");
+}
+
+function renderSupplemental() {
+  const experiments = payload.supplemental_experiments || [];
+  const baseRowsByCase = new Map(rows.map(row => [`${row.model}|${row.case_key}`, row]));
+  const totalRows = experiments.reduce((total, experiment) => total + experiment.rows.length, 0);
+  document.querySelector("#caseCount").textContent = fmtInt(totalRows);
+  document.querySelector("#completeCount").textContent = fmtInt(experiments.reduce((total, experiment) => total + experiment.rows.filter(row => row.answered).length, 0));
+  document.querySelector("#sourceCount").textContent = fmtInt(totalRows);
+  document.querySelector("#supplementalNote").innerHTML = `<strong>${fmtInt(experiments.length)} supplemental experiments loaded</strong><span>These results use changed prompts, noise processes, price ranges, or a model subset. They are intentionally kept separate from the core benchmark. The consumer-surplus Gemini source is not yet present in <code>new_model_results</code>.</span>`;
+  document.querySelector("#supplementalTable tbody").innerHTML = experiments.map(experiment => {
+    const answered = experiment.rows.filter(row => row.answered && Number.isFinite(row.rel_rev_loss));
+    const directions = answered.reduce((counts, row) => {
+      const direction = priceDirection(row);
+      if (direction) counts[direction] += 1;
+      return counts;
+    }, { under: 0, similar: 0, over: 0 });
+    const referencePairs = answered.map(row => ({ row, reference: baseRowsByCase.get(`${experiment.reference_model}|${row.case_key}`) }))
+      .filter(pair => Number.isFinite(pair.reference?.rel_rev_loss));
+    const meanDifference = mean(referencePairs.map(pair => pair.row.rel_rev_loss - pair.reference.rel_rev_loss));
+    return `<tr><th>${experiment.name}<br><span class="quiet">${experiment.description}</span></th><td>${fmtInt(answered.length)}</td><td>${fmtLoss(mean(answered.map(row => row.rel_rev_loss)))}</td><td>${fmtPct(shareWhere(answered.map(row => row.rel_rev_loss), loss => loss <= NEAR_OPTIMAL_THRESHOLD))}</td><td>${fmtPct(shareWhere(answered.map(row => row.rel_rev_loss), loss => loss >= SEVERE_LOSS_THRESHOLD))}</td><td>${fmtPct(directions.under / answered.length)} / ${fmtPct(directions.similar / answered.length)} / ${fmtPct(directions.over / answered.length)}</td><td>${experiment.reference_model}<br><span class="quiet">${fmtInt(referencePairs.length)} matched</span></td><td>${fmtSignedLoss(meanDifference)}<br><span class="quiet">experiment minus reference</span></td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="quiet">No supplemental experiments were loaded.</td></tr>`;
 }
 
 function render() {
@@ -4249,6 +4305,7 @@ function render() {
   if (selectedTab === "withinTests") renderWithinTests();
   if (selectedTab === "within") renderWithin();
   if (selectedTab === "groundTruth") renderGroundTruth();
+  if (selectedTab === "supplemental") renderSupplemental();
 }
 
 document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => {

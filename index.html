@@ -978,13 +978,20 @@
         </div>
         <div id="groundTruthChart" class="ground-truth-chart"></div>
       </article>
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Revenue generated at each price</h2>
+          <span>Ground-truth revenue curve with the same recommended-price markers</span>
+        </div>
+        <div id="groundTruthRevenueChart" class="ground-truth-chart"></div>
+      </article>
       <article class="card table-card">
         <div class="card-heading">
           <h2>Price estimates</h2>
           <span>Recommended prices for the selected benchmark case</span>
         </div>
         <div class="table-wrap">
-          <table id="groundTruthEstimateTable"><thead><tr><th>Method</th><th>Recommended price</th><th>Difference from P*</th><th>Relative revenue loss</th></tr></thead><tbody></tbody></table>
+          <table id="groundTruthEstimateTable"><thead><tr><th>Method</th><th>Recommended price</th><th>Difference from P*</th><th>Revenue at recommended price</th><th>Revenue gap vs R*</th><th>Relative revenue loss</th></tr></thead><tbody></tbody></table>
         </div>
       </article>
     </section>
@@ -1003,8 +1010,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>5.5</div>
+    <div>6.0</div>
   </footer>
-  <script src="app.js?v=20260918a"></script>
+  <script src="app.js?v=20260920c"></script>
 </body>
 </html>

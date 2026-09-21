@@ -27,6 +27,7 @@
       <button class="tab" data-tab="tTestsAcross">T Tests (Across Models)</button>
       <button class="tab" data-tab="tTestsWithin">T Tests (Within Models)</button>
       <button class="tab" data-tab="groundTruth">Ground Truth Curves</button>
+      <button class="tab" data-tab="supplemental">Supplemental Experiments</button>
     </nav>
 
     <section id="overview" class="panel">
@@ -996,6 +997,51 @@
       </article>
     </section>
 
+    <section id="supplemental" class="panel">
+      <article class="comparison-note card" id="supplementalNote"></article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Supplemental experiment results</h2>
+          <span>Each experiment is reported separately and does not alter the core benchmark leaderboard</span>
+        </div>
+        <div class="table-wrap">
+          <table id="supplementalTable">
+            <thead><tr><th>Experiment</th><th>Cases</th><th>Mean loss</th><th>Near-optimal</th><th>Severe loss</th><th>Under / similar / over</th><th>Matched reference</th><th>Experiment − reference</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Matched comparison with original benchmark methods</h2>
+          <span>Every row uses only cases available in both the supplemental experiment and the original method</span>
+        </div>
+        <div class="table-wrap">
+          <table id="supplementalMatchedTable">
+            <thead><tr><th>Experiment</th><th>Original method</th><th>Matched cases</th><th>Supplemental mean loss</th><th>Original mean loss</th><th>Experiment − original</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Claude Fable 5.1: matched mean loss</h2>
+          <span>Fable and all original methods on the same successful static subset</span>
+        </div>
+        <div id="supplementalFableChart" class="pair-mean-grid"></div>
+      </article>
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Additive versus multiplicative noise: GPT-5 mini</h2>
+          <span id="supplementalAdditiveNote">Matched static cases only</span>
+        </div>
+        <label>Compare within matched cases by
+          <select id="supplementalAdditiveGroup"></select>
+        </label>
+        <div id="supplementalAdditiveChart" class="table-wrap"></div>
+      </article>
+    </section>
+
     <section id="within" class="panel" hidden>
       <div class="toolbar card" aria-label="Within-model controls">
         <label>Group cases by
@@ -1010,8 +1056,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>6.0</div>
+    <div>6.1</div>
   </footer>
-  <script src="app.js?v=20260920c"></script>
+  <script src="app.js?v=20260920g"></script>
 </body>
 </html>

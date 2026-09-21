@@ -6,6 +6,7 @@ let answeredRowsByModel = new Map();
 let regressionResultsById = new Map();
 let groundTruthByKey = new Map();
 let selectedGroundTruthKey = "";
+let selectedSupplementalAdditiveGroup = "demand_model";
 const withinFieldCache = new Map();
 const withinGroupSummaryCache = new Map();
 const tTestRowCache = new Map();
@@ -45,6 +46,7 @@ const MODEL_META = {
   "GPT-5 mini": { colorClass: "model-gpt", short: "GPT" },
   "Gemini 2.5 Flash": { colorClass: "model-gemini", short: "Gemini" },
   "Claude Haiku 4.5": { colorClass: "model-claude", short: "Claude" },
+  "Claude Fable 5.1": { colorClass: "model-fallback", short: "Fable" },
   "Heuristic": { colorClass: "model-heuristic", short: "Heuristic" },
   "Regression Heuristic": { colorClass: "model-regression", short: "Regression Heuristic" },
 };
@@ -635,6 +637,7 @@ function renderPairMeanCards(items, options = {}) {
   const showPValues = options.showPValues !== false;
   const showValues = options.showValues === true;
   const withinStyle = options.withinStyle === true;
+  const legend = options.legend || null;
   const finite = items.flatMap(item => [item.leftMean, item.rightMean]).filter(Number.isFinite);
   const maxValue = Math.max(...finite, 0.000001);
   const axis = options.yMax
@@ -645,7 +648,7 @@ function renderPairMeanCards(items, options = {}) {
   const height = withinStyle ? 310 : 300;
   const margin = withinStyle
     ? { top: 38, right: 18, bottom: 58, left: 130 }
-    : { top: 34, right: 18, bottom: 58, left: 64 };
+    : { top: legend ? 74 : 34, right: 18, bottom: 58, left: 64 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const groupWidth = plotWidth / items.length;
@@ -673,8 +676,8 @@ function renderPairMeanCards(items, options = {}) {
         <rect class="${item.rightClass}" x="${rightX.toFixed(2)}" y="${rightY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - rightY).toFixed(2)}"></rect>
         ${showValues ? `<text x="${(leftX + barWidth / 2).toFixed(2)}" y="${Math.max(margin.top + 12, leftY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtLoss(item.leftMean)}</text>
         <text x="${(rightX + barWidth / 2).toFixed(2)}" y="${Math.max(margin.top + 12, rightY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtLoss(item.rightMean)}</text>` : ""}
-        <text x="${(leftX + barWidth / 2).toFixed(2)}" y="${withinStyle ? height - 28 : height - 34}" text-anchor="middle">${item.leftLabel}</text>
-        <text x="${(rightX + barWidth / 2).toFixed(2)}" y="${withinStyle ? height - 28 : height - 34}" text-anchor="middle">${item.rightLabel}</text>
+        ${legend ? "" : `<text x="${(leftX + barWidth / 2).toFixed(2)}" y="${withinStyle ? height - 28 : height - 34}" text-anchor="middle">${item.leftLabel}</text>
+        <text x="${(rightX + barWidth / 2).toFixed(2)}" y="${withinStyle ? height - 28 : height - 34}" text-anchor="middle">${item.rightLabel}</text>`}
         <text x="${center.toFixed(2)}" y="${withinStyle ? height - 5 : height - 14}" text-anchor="middle" class="axis-title">${item.title}</text>
         ${showPValues ? `<text x="${center.toFixed(2)}" y="${Math.max(margin.top + 10, pY).toFixed(2)}" text-anchor="middle" class="${sigClass(item.pValue)}">p=${fmtP(item.pValue)}</text>` : ""}
       </g>`;
@@ -686,6 +689,7 @@ function renderPairMeanCards(items, options = {}) {
       <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g class="pair-mean-bars">${groups}</g>
+      ${legend ? `<g transform="translate(${margin.left} 22)"><rect class="${legend.leftClass}" x="0" y="-10" width="14" height="14"></rect><text x="20" y="2">${legend.leftLabel}</text><rect class="${legend.rightClass}" x="0" y="12" width="14" height="14"></rect><text x="20" y="24">${legend.rightLabel}</text></g>` : ""}
       ${verticalAxisTitleSvg(margin, plotHeight, "Mean relative revenue loss", { padding: withinStyle ? 70 : 58 })}
     </svg>`;
 }
@@ -700,7 +704,7 @@ function renderAcrossMeanChart(modelItems, options = {}) {
     : percentAxisConfig(finiteMeans, { minimum: Math.min(0.01, Math.max(0.002, Math.max(...finiteMeans) * 0.9)) });
   const { yMax, yTicks } = axis;
   const compact = options.compact === true;
-  const width = compact ? 285 : 600;
+  const width = options.width ?? (compact ? 285 : Math.max(600, modelItems.length * 125));
   const height = compact ? 270 : 330;
   const margin = compact
     ? { top: 28, right: 14, bottom: 54, left: 56 }
@@ -727,7 +731,7 @@ function renderAcrossMeanChart(modelItems, options = {}) {
       <g>
         <rect class="${modelMeta(item.model).colorClass}" x="${x.toFixed(2)}" y="${barY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - barY).toFixed(2)}"></rect>
         <text x="${centers[index].toFixed(2)}" y="${(barY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtLoss(item.meanLoss)}</text>
-        <text x="${centers[index].toFixed(2)}" y="${height - 22}" text-anchor="middle" class="axis-title">${modelMeta(item.model).short}</text>
+        <text x="${centers[index].toFixed(2)}" y="${height - 22}" text-anchor="middle" class="axis-title">${options.labels?.[item.model] || modelMeta(item.model).short}</text>
       </g>`;
   }).join("");
 
@@ -4277,11 +4281,20 @@ function renderGroundTruth() {
 function renderSupplemental() {
   const experiments = payload.supplemental_experiments || [];
   const baseRowsByCase = new Map(rows.map(row => [`${row.model}|${row.case_key}`, row]));
+  const originalMethods = [...models, HEURISTIC_LABEL, REGRESSION_LABEL];
+  const originalLossFor = (row, method) => {
+    if (method === HEURISTIC_LABEL) return baseRowsByCase.get(`${models[0]}|${row.case_key}`)?.heuristic_rel_rev_loss;
+    if (method === REGRESSION_LABEL) {
+      const fit = regressionForRow(row);
+      return fit && regressionIsEligible(fit) ? Math.abs(fit.revenue_pct_gap) : NaN;
+    }
+    return baseRowsByCase.get(`${method}|${row.case_key}`)?.rel_rev_loss;
+  };
   const totalRows = experiments.reduce((total, experiment) => total + experiment.rows.length, 0);
   document.querySelector("#caseCount").textContent = fmtInt(totalRows);
   document.querySelector("#completeCount").textContent = fmtInt(experiments.reduce((total, experiment) => total + experiment.rows.filter(row => row.answered).length, 0));
   document.querySelector("#sourceCount").textContent = fmtInt(totalRows);
-  document.querySelector("#supplementalNote").innerHTML = `<strong>${fmtInt(experiments.length)} supplemental experiments loaded</strong><span>These results use changed prompts, noise processes, price ranges, or a model subset. They are intentionally kept separate from the core benchmark. The consumer-surplus Gemini source is not yet present in <code>new_model_results</code>.</span>`;
+  document.querySelector("#supplementalNote").innerHTML = `<strong>${fmtInt(experiments.length)} supplemental experiments loaded</strong><span>These results use changed prompts, noise processes, price ranges, or a model subset. They are intentionally kept separate from the core benchmark. Every comparison below uses the exact matched cases available in both conditions.</span>`;
   document.querySelector("#supplementalTable tbody").innerHTML = experiments.map(experiment => {
     const answered = experiment.rows.filter(row => row.answered && Number.isFinite(row.rel_rev_loss));
     const directions = answered.reduce((counts, row) => {
@@ -4294,6 +4307,76 @@ function renderSupplemental() {
     const meanDifference = mean(referencePairs.map(pair => pair.row.rel_rev_loss - pair.reference.rel_rev_loss));
     return `<tr><th>${experiment.name}<br><span class="quiet">${experiment.description}</span></th><td>${fmtInt(answered.length)}</td><td>${fmtLoss(mean(answered.map(row => row.rel_rev_loss)))}</td><td>${fmtPct(shareWhere(answered.map(row => row.rel_rev_loss), loss => loss <= NEAR_OPTIMAL_THRESHOLD))}</td><td>${fmtPct(shareWhere(answered.map(row => row.rel_rev_loss), loss => loss >= SEVERE_LOSS_THRESHOLD))}</td><td>${fmtPct(directions.under / answered.length)} / ${fmtPct(directions.similar / answered.length)} / ${fmtPct(directions.over / answered.length)}</td><td>${experiment.reference_model}<br><span class="quiet">${fmtInt(referencePairs.length)} matched</span></td><td>${fmtSignedLoss(meanDifference)}<br><span class="quiet">experiment minus reference</span></td></tr>`;
   }).join("") || `<tr><td colspan="8" class="quiet">No supplemental experiments were loaded.</td></tr>`;
+  const matchedRows = experiments.flatMap(experiment => {
+    const answered = experiment.rows.filter(row => row.answered && Number.isFinite(row.rel_rev_loss));
+    return originalMethods.map(method => {
+      const pairs = answered.map(row => {
+        const originalLoss = originalLossFor(row, method);
+        return { supplementalLoss: row.rel_rev_loss, originalLoss };
+      }).filter(pair => Number.isFinite(pair.originalLoss));
+      return { experiment, method, pairs };
+    });
+  });
+  document.querySelector("#supplementalMatchedTable tbody").innerHTML = matchedRows.length
+    ? matchedRows.map(({ experiment, method, pairs }) => {
+        const supplementalMean = mean(pairs.map(pair => pair.supplementalLoss));
+        const originalMean = mean(pairs.map(pair => pair.originalLoss));
+        return `<tr><th>${experiment.name}</th><td>${modelMeta(method).short}</td><td>${fmtInt(pairs.length)}</td><td>${fmtLoss(supplementalMean)}</td><td>${fmtLoss(originalMean)}</td><td class="${supplementalMean < originalMean ? "winner-cell" : ""}">${fmtSignedLoss(supplementalMean - originalMean)}</td></tr>`;
+      }).join("")
+    : `<tr><td colspan="6" class="quiet">No matched supplemental comparisons are available.</td></tr>`;
+
+  const fable = experiments.find(experiment => experiment.id === "fable_static_subset");
+  const fableChart = document.querySelector("#supplementalFableChart");
+  if (fableChart) {
+    const fableRows = fable?.rows.filter(row => row.answered && Number.isFinite(row.rel_rev_loss)) || [];
+    const fableItems = fable ? [
+      { model: fable.model, meanLoss: mean(fableRows.map(row => row.rel_rev_loss)) },
+      ...originalMethods.map(method => {
+        const pairs = fableRows.map(row => originalLossFor(row, method)).filter(Number.isFinite);
+        return { model: method, meanLoss: mean(pairs) };
+      }),
+    ].filter(item => Number.isFinite(item.meanLoss)) : [];
+    fableChart.innerHTML = renderAcrossMeanChart(fableItems, {
+      width: 780,
+      labels: { "Regression Heuristic": "Regression" },
+    });
+  }
+
+  const additive = experiments.find(experiment => experiment.id === "gpt_additive_static");
+  const additivePicker = document.querySelector("#supplementalAdditiveGroup");
+  const additiveChart = document.querySelector("#supplementalAdditiveChart");
+  const additiveNote = document.querySelector("#supplementalAdditiveNote");
+  if (!additivePicker || !additiveChart || !additiveNote) return;
+  const additivePairs = (additive?.rows || []).filter(row => row.answered).map(row => ({
+    additive: row,
+    multiplicativeLoss: originalLossFor(row, "GPT-5 mini"),
+  })).filter(pair => Number.isFinite(pair.multiplicativeLoss));
+  const availableGroups = Object.keys(GROUP_OPTIONS).filter(field => new Set(additivePairs.map(pair => levelValue(pair.additive[field]))).size > 1);
+  if (!availableGroups.includes(selectedSupplementalAdditiveGroup)) selectedSupplementalAdditiveGroup = availableGroups[0] || "demand_model";
+  additivePicker.innerHTML = availableGroups.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("");
+  additivePicker.value = selectedSupplementalAdditiveGroup;
+  const levels = [...new Set(additivePairs.map(pair => levelValue(pair.additive[selectedSupplementalAdditiveGroup])))]
+    .sort((a, b) => displayLevel(a).localeCompare(displayLevel(b), undefined, { numeric: true }));
+  const chartItems = levels.map(level => {
+    const pairs = additivePairs.filter(pair => levelValue(pair.additive[selectedSupplementalAdditiveGroup]) === level);
+    return {
+      title: displayLevel(level), leftLabel: "Additive", rightLabel: "Multiplicative",
+      leftMean: mean(pairs.map(pair => pair.additive.rel_rev_loss)),
+      rightMean: mean(pairs.map(pair => pair.multiplicativeLoss)),
+      leftClass: "pair-one", rightClass: "pair-two",
+    };
+  });
+  additiveNote.textContent = `${fmtInt(additivePairs.length)} exactly matched GPT cases. Purple = additive noise; pink = original multiplicative noise. Each group uses the same cases in both conditions.`;
+  additiveChart.innerHTML = renderPairMeanCards(chartItems, {
+    showPValues: false,
+    showValues: true,
+    legend: {
+      leftLabel: "Additive noise",
+      leftClass: "pair-one",
+      rightLabel: "Multiplicative noise",
+      rightClass: "pair-two",
+    },
+  });
 }
 
 function render() {
@@ -4319,6 +4402,11 @@ document.querySelectorAll(".tab").forEach(button => button.addEventListener("cli
 document.querySelector("#groundTruthCasePicker").addEventListener("change", event => {
   selectedGroundTruthKey = event.target.value;
   renderGroundTruth();
+});
+
+document.querySelector("#supplementalAdditiveGroup").addEventListener("change", event => {
+  selectedSupplementalAdditiveGroup = event.target.value;
+  renderSupplemental();
 });
 
 document.querySelector("#groupPicker").addEventListener("change", event => {

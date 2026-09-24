@@ -1,18 +1,27 @@
 let payload = { rows: [], models: [] };
 let rows = [];
 let models = [];
+let selectedBenchmarkGroup = "all";
+let selectedBenchmarkRun = 1;
+let benchmarkSelectionDescription = "";
 let rowsByModel = new Map();
 let answeredRowsByModel = new Map();
 let regressionResultsById = new Map();
 let groundTruthByKey = new Map();
 let selectedGroundTruthKey = "";
-let selectedSupplementalAdditiveGroup = "demand_model";
+let activeBenchmarkSignature = "";
+const overviewFiltersByTab = { overview: {}, advancedModels: {} };
+let allRunsCaseCache = null;
+let averagedBasicRowsCache = null;
 const withinFieldCache = new Map();
 const withinGroupSummaryCache = new Map();
 const tTestRowCache = new Map();
 const withinTTestRowCache = new Map();
 const withinTTestPairSummaryCache = new Map();
 const matchedLevelDiffCache = new Map();
+const tTestEvidenceCache = new Map();
+const runComparisonEvidenceCache = new Map();
+const BOOTSTRAP_REPS = 600;
 
 let selectedTab = "tests";
 let selectedGroup = "demand_model";
@@ -38,6 +47,10 @@ let selectedTTestWithinCompareField = "scenario_subtype";
 let selectedTTestWithinCompareLevels = ["static", "seasonal"];
 let selectedTTestWithinField = "demand_model";
 let selectedTTestWithinLevels = [];
+let selectedRunComparisonModel = "";
+let selectedRunComparisonRuns = [];
+let selectedRunComparisonField = "demand_model";
+let selectedRunComparisonLevels = [];
 let selectedWithinTTestFilters = {
   scenario_subtype: ["static", "seasonal"],
 };
@@ -47,13 +60,25 @@ const MODEL_META = {
   "Gemini 2.5 Flash": { colorClass: "model-gemini", short: "Gemini" },
   "Claude Haiku 4.5": { colorClass: "model-claude", short: "Claude" },
   "Claude Fable 5.1": { colorClass: "model-fallback", short: "Fable" },
+  "GPT-6 Astra": { colorClass: "model-astra", short: "GPT-6 Astra" },
+  "Gemini 3.1 Pro Preview": { colorClass: "model-pro", short: "Gemini 3.1 Pro" },
   "Heuristic": { colorClass: "model-heuristic", short: "Heuristic" },
   "Regression Heuristic": { colorClass: "model-regression", short: "Regression Heuristic" },
 };
 
 const HEURISTIC_LABEL = "Heuristic";
 const REGRESSION_LABEL = "Regression Heuristic";
-const ACROSS_CHART_ORDER = ["Gemini 2.5 Flash", "Claude Haiku 4.5", "GPT-5 mini", HEURISTIC_LABEL];
+const TAB_DESCRIPTIONS = {
+  overview: "Summarizes model performance, leaderboards, loss rates, pricing direction, and static regression diagnostics.",
+  tests: "Compares selected models across matched cases using loss, pricing, distribution, and direction results.",
+  withinTests: "Shows how each selected model performs when one benchmark input varies and the other inputs are held matched.",
+  tTestsAcross: "Runs paired t tests between selected models on the same filtered benchmark cases.",
+  tTestsRuns: "Runs paired t tests between repeated runs of one selected AI model on the same filtered cases.",
+  tTestsWithin: "Runs paired t tests between selected input levels within each selected model.",
+  groundTruth: "Plots supplied demand and revenue curves with optimal prices and model price recommendations.",
+  advancedModels: "Compares the advanced and basic models on their shared subset of benchmark cases.",
+};
+let ACROSS_CHART_ORDER = [];
 const PRICE_DIRECTION_TOLERANCE = 0.05;
 const NEAR_OPTIMAL_THRESHOLD = 0.05;
 const SEVERE_LOSS_THRESHOLD = 0.25;
@@ -251,6 +276,27 @@ function regressionForCaseRows(caseRows) {
   return regressionForRow(Object.values(caseRows).find(row => row?.instance_id));
 }
 
+function benchmarkRowFor(row, method) {
+  if (!row) return null;
+  let price, loss, optimum = row.p_star;
+  if (method === HEURISTIC_LABEL) {
+    price = row.heuristic_price;
+    loss = row.heuristic_rel_rev_loss;
+  } else if (method === REGRESSION_LABEL) {
+    const fit = regressionForRow(row);
+    if (!fit || fit.fit_status === "infeasible") return null;
+    price = fit.p_hat;
+    loss = Number.isFinite(fit.revenue_pct_gap) ? Math.abs(fit.revenue_pct_gap) : NaN;
+    optimum = fit.p_star ?? optimum;
+  } else return row;
+  if (!Number.isFinite(price) || !Number.isFinite(loss)) return null;
+  return {...row, model: method, ai_answer: price, rel_rev_loss: loss, p_star: optimum, answered: true};
+}
+
+function comparisonMethods() {
+  return [...models, ...[HEURISTIC_LABEL, REGRESSION_LABEL].filter(method => (answeredRowsByModel.get(method) || []).length)];
+}
+
 function hasRegressionForScenarios(scenarios) {
   const availableScenarios = new Set([...regressionResultsById.values()].map(item => item.scenario_subtype));
   return scenarios.length > 0 && scenarios.every(scenario => availableScenarios.has(scenario));
@@ -291,9 +337,12 @@ function dropdownStateKey(dropdown) {
   const key = dropdown?.dataset.testFilterDropdown
     || dropdown?.dataset.overviewFilterDropdown
     || dropdown?.dataset.withinTTestFilterDropdown
+    || dropdown?.dataset.allRunsDropdown
     || "";
   return dropdown?.closest("#tTestsAcross") && dropdown?.dataset.testFilterDropdown
     ? `t-tests-across:${key}`
+    : dropdown?.closest("#tTestsRuns") && dropdown?.dataset.testFilterDropdown
+      ? `t-tests-runs:${key}`
     : key;
 }
 
@@ -309,10 +358,15 @@ function restoreOpenDropdownKeys(keys) {
     const acrossTTestKey = key.startsWith("t-tests-across:")
       ? key.slice("t-tests-across:".length)
       : null;
+    const runsTTestKey = key.startsWith("t-tests-runs:")
+      ? key.slice("t-tests-runs:".length)
+      : null;
     const dropdown = acrossTTestKey
       ? document.querySelector(`#tTestsAcross [data-test-filter-dropdown="${acrossTTestKey}"]`)
+      : runsTTestKey
+        ? document.querySelector(`#tTestsRuns [data-test-filter-dropdown="${runsTTestKey}"]`)
       : document.querySelector(
-          `[data-test-filter-dropdown="${key}"], [data-overview-filter-dropdown="${key}"], [data-within-t-test-filter-dropdown="${key}"]`
+          `[data-test-filter-dropdown="${key}"], [data-overview-filter-dropdown="${key}"], [data-within-t-test-filter-dropdown="${key}"], [data-all-runs-dropdown="${key}"]`
         );
     if (dropdown) dropdown.open = true;
   });
@@ -397,7 +451,7 @@ function selectedWithinAllSelections(selectedModels, field) {
 }
 
 function modelMeta(model) {
-  return MODEL_META[model] || { colorClass: "model-fallback", short: model };
+  return { ...(MODEL_META[model] || { colorClass: "model-fallback" }), short: model };
 }
 
 function kpi(label, value, note) {
@@ -694,6 +748,17 @@ function renderPairMeanCards(items, options = {}) {
     </svg>`;
 }
 
+function modelAxisLabel(model, center, y, slotWidth) {
+  const limit = Math.max(12, Math.floor(slotWidth / 7));
+  const lines = [""];
+  for (const word of model.split(" ")) {
+    const last = lines.length - 1;
+    if (lines[last] && `${lines[last]} ${word}`.length > limit) lines.push(word);
+    else lines[last] += `${lines[last] ? " " : ""}${word}`;
+  }
+  return `<text x="${center}" y="${y}" text-anchor="middle" class="axis-title">${lines.map((line, index) => `<tspan x="${center}" dy="${index ? 17 : 0}">${line}</tspan>`).join("")}</text>`;
+}
+
 function renderAcrossMeanChart(modelItems, options = {}) {
   if (!modelItems.length) return `<p class="quiet">No complete matched cases available.</p>`;
   const finiteMeans = modelItems.map(item => item.meanLoss).filter(Number.isFinite);
@@ -704,11 +769,11 @@ function renderAcrossMeanChart(modelItems, options = {}) {
     : percentAxisConfig(finiteMeans, { minimum: Math.min(0.01, Math.max(0.002, Math.max(...finiteMeans) * 0.9)) });
   const { yMax, yTicks } = axis;
   const compact = options.compact === true;
-  const width = options.width ?? (compact ? 285 : Math.max(600, modelItems.length * 125));
-  const height = compact ? 270 : 330;
+  const width = options.width ?? Math.max(600, modelItems.length * 155);
+  const height = compact ? 300 : 360;
   const margin = compact
-    ? { top: 28, right: 14, bottom: 54, left: 56 }
-    : { top: 32, right: 34, bottom: 62, left: 72 };
+    ? { top: 28, right: 14, bottom: 84, left: 56 }
+    : { top: 32, right: 34, bottom: 92, left: 72 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const slotWidth = plotWidth / modelItems.length;
@@ -731,17 +796,17 @@ function renderAcrossMeanChart(modelItems, options = {}) {
       <g>
         <rect class="${modelMeta(item.model).colorClass}" x="${x.toFixed(2)}" y="${barY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - barY).toFixed(2)}"></rect>
         <text x="${centers[index].toFixed(2)}" y="${(barY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtLoss(item.meanLoss)}</text>
-        <text x="${centers[index].toFixed(2)}" y="${height - 22}" text-anchor="middle" class="axis-title">${options.labels?.[item.model] || modelMeta(item.model).short}</text>
+        ${modelAxisLabel(item.model, centers[index], height - 61, slotWidth)}
       </g>`;
   }).join("");
 
   return `
-    <svg class="pair-mean-chart across-mean-chart ${compact ? "compact-across-mean-chart" : ""}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Across-method mean relative revenue loss bars">
+    <svg class="pair-mean-chart across-mean-chart ${compact ? "compact-across-mean-chart" : ""}" ${compact ? `style="min-width:${width}px"` : ""} viewBox="0 0 ${width} ${height}" role="img" aria-label="${options.axisTitle || "Across-method mean relative revenue loss"} bars">
       <g class="hist-axis">${axisLines}</g>
       <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <g class="pair-mean-bars">${barsHtml}</g>
-      ${verticalAxisTitleSvg(margin, plotHeight, "Mean relative revenue loss")}
+      ${verticalAxisTitleSvg(margin, plotHeight, options.axisTitle || "Mean relative revenue loss")}
     </svg>`;
 }
 
@@ -752,9 +817,9 @@ function renderAcrossRateChart(modelItems, options = {}) {
   const finiteRates = modelItems.map(item => item[metricKey]).filter(Number.isFinite);
   if (!finiteRates.length) return `<p class="quiet">No numeric ${metricLabel.toLowerCase()} available.</p>`;
 
-  const width = 600;
-  const height = 330;
-  const margin = { top: 32, right: 34, bottom: 62, left: 72 };
+  const width = Math.max(600, modelItems.length * 155);
+  const height = 360;
+  const margin = { top: 32, right: 34, bottom: 92, left: 72 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const slotWidth = plotWidth / modelItems.length;
@@ -781,7 +846,7 @@ function renderAcrossRateChart(modelItems, options = {}) {
       <g>
         <rect class="${modelMeta(item.model).colorClass}" x="${x.toFixed(2)}" y="${barY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${(margin.top + plotHeight - barY).toFixed(2)}"></rect>
         <text x="${centers[index].toFixed(2)}" y="${Math.max(margin.top + 12, barY - 7).toFixed(2)}" text-anchor="middle" class="pair-value-label">${fmtPct(value)}</text>
-        <text x="${centers[index].toFixed(2)}" y="${height - 22}" text-anchor="middle" class="axis-title">${modelMeta(item.model).short}</text>
+        ${modelAxisLabel(item.model, centers[index], height - 61, slotWidth)}
       </g>`;
   }).join("");
 
@@ -987,8 +1052,8 @@ function populateTestFilterControl(field) {
   });
 }
 
-function setupAcrossTTestFilterPanel() {
-  const panel = document.querySelector("#tTestAcrossFilterPanel");
+function setupTestFilterPanel(panelId, resetId) {
+  const panel = document.querySelector(`#${panelId}`);
   const source = document.querySelector("#tests .test-selection-toolbar");
   if (!panel || !source || panel.dataset.ready === "true") return;
 
@@ -996,12 +1061,20 @@ function setupAcrossTTestFilterPanel() {
     panel.append(filter.cloneNode(true));
   });
   const reset = document.createElement("button");
-  reset.id = "resetTTestAcrossFilters";
+  reset.id = resetId;
   reset.className = "secondary-button";
   reset.type = "button";
   reset.textContent = "Reset selection";
   panel.append(reset);
   panel.dataset.ready = "true";
+}
+
+function setupAcrossTTestFilterPanel() {
+  setupTestFilterPanel("tTestAcrossFilterPanel", "resetTTestAcrossFilters");
+}
+
+function setupRunTTestFilterPanel() {
+  setupTestFilterPanel("tTestRunsFilterPanel", "resetTTestRunsFilters");
 }
 
 function populateOverviewFilterControl(field) {
@@ -1090,13 +1163,14 @@ function populateOverviewFilterControls() {
 }
 
 function populateWithinTestControls() {
-  selectedWithinTestModels = selectedWithinTestModels.filter(model => models.includes(model));
+  const availableMethods = comparisonMethods();
+  selectedWithinTestModels = selectedWithinTestModels.filter(model => availableMethods.includes(model));
   if (!selectedWithinTestModels.length) {
-    selectedWithinTestModels = [...models];
+    selectedWithinTestModels = [...availableMethods];
   }
 
   const modelPicker = document.querySelector("#withinTestModels");
-  modelPicker.innerHTML = models
+  modelPicker.innerHTML = availableMethods
     .map(model => `<option value="${model}" ${selectedWithinTestModels.includes(model) ? "selected" : ""}>${model}</option>`)
     .join("");
 
@@ -1202,7 +1276,7 @@ function hasRegressionForCurrentTestFilters() {
   return hasRegressionForScenarios(scenarios);
 }
 
-function availableTTestMethods(includeRegression = false) {
+function availableTTestMethods(includeRegression = true) {
   const hasHeuristic = rows.some(row => Number.isFinite(row.heuristic_rel_rev_loss));
   const methods = ACROSS_CHART_ORDER.filter(method =>
     method === HEURISTIC_LABEL ? hasHeuristic : models.includes(method)
@@ -1242,24 +1316,7 @@ function tTestRowsForMethod(method, excludedFields = []) {
   const cacheKey = [method, normalizedExcluded.join(","), tTestFilterSignature(normalizedExcluded)].join("||");
   if (tTestRowCache.has(cacheKey)) return tTestRowCache.get(cacheKey);
 
-  let result;
-  if (method === HEURISTIC_LABEL) {
-    const uniqueRows = new Map();
-    rows.forEach(row => {
-      if (!row.answered || !Number.isFinite(row.heuristic_rel_rev_loss)) return;
-      if (!passesTTestRowFilters(row, normalizedExcluded)) return;
-      const key = caseRowIdentityKey(row);
-      if (!uniqueRows.has(key)) uniqueRows.set(key, row);
-    });
-    result = [...uniqueRows.values()];
-  } else {
-    result = rows.filter(row =>
-      row.model === method
-      && row.answered
-      && Number.isFinite(row.rel_rev_loss)
-      && passesTTestRowFilters(row, normalizedExcluded)
-    );
-  }
+  const result = (answeredRowsByModel.get(method) || []).filter(row => passesTTestRowFilters(row, normalizedExcluded));
   tTestRowCache.set(cacheKey, result);
   return result;
 }
@@ -1574,24 +1631,7 @@ function withinTTestRowsForMethod(method, excludedFields = []) {
   const cacheKey = [method, normalizedExcluded.join(","), withinTTestFilterSignature(normalizedExcluded)].join("||");
   if (withinTTestRowCache.has(cacheKey)) return withinTTestRowCache.get(cacheKey);
 
-  let result;
-  if (method === HEURISTIC_LABEL) {
-    const uniqueRows = new Map();
-    rows.forEach(row => {
-      if (!row.answered || !Number.isFinite(row.heuristic_rel_rev_loss)) return;
-      if (!passesWithinTTestRowFilters(row, normalizedExcluded)) return;
-      const key = caseRowIdentityKey(row);
-      if (!uniqueRows.has(key)) uniqueRows.set(key, row);
-    });
-    result = [...uniqueRows.values()];
-  } else {
-    result = rows.filter(row =>
-      row.model === method
-      && row.answered
-      && Number.isFinite(row.rel_rev_loss)
-      && passesWithinTTestRowFilters(row, normalizedExcluded)
-    );
-  }
+  const result = (answeredRowsByModel.get(method) || []).filter(row => passesWithinTTestRowFilters(row, normalizedExcluded));
   withinTTestRowCache.set(cacheKey, result);
   return result;
 }
@@ -1638,7 +1678,9 @@ function benchmarkInputColumns() {
 }
 
 function regressionResultsForOverview() {
-  const staticRows = rows.filter(row =>
+  const sourceRows = selectedTab === "advancedModels"
+    ? comparableCases(passesOverviewFilters).map(entry => Object.values(entry)[0]) : rows;
+  const staticRows = sourceRows.filter(row =>
     levelValue(row.scenario_subtype) === "static"
     && passesOverviewFilters(row)
   );
@@ -1706,6 +1748,72 @@ function withinTTestUsesRelaxedScenarioMatch(compareField, levelA, levelB) {
   return config.ignoredFields.length > 0;
 }
 
+function averagedBasicRows() {
+  if (averagedBasicRowsCache) return averagedBasicRowsCache;
+  const byModelCase = new Map();
+  for (const row of payload.rows) {
+    if (payload.model_groups[row.model] !== "basic") continue;
+    const key = JSON.stringify([row.model, row.case_key]);
+    if (!byModelCase.has(key)) byModelCase.set(key, new Map());
+    byModelCase.get(key).set(row.run_id, row);
+  }
+  averagedBasicRowsCache = [...byModelCase.values()].map(runs => {
+    const source = [...runs.values()][0];
+    const runRows = payload.basic_runs.map(run => runs.get(run));
+    const answered = runRows.every(row => row?.answered
+      && Number.isFinite(row.ai_answer) && Number.isFinite(row.rel_rev_loss)
+      && Number.isFinite(row.p_star) && row.p_star > 0);
+    // One observation per input case, never five independent t-test observations.
+    return {...source, run_id: "all", averaged_run_count: runRows.length, answered,
+      ai_answer: answered ? mean(runRows.map(row => row.ai_answer)) : null,
+      rel_rev_loss: answered ? mean(runRows.map(row => row.rel_rev_loss)) : null};
+  });
+  return averagedBasicRowsCache;
+}
+
+function basicRunDescription() {
+  return selectedBenchmarkRun === "all" ? "all 5 runs (averaged per case)" : `run ${selectedBenchmarkRun} of 5`;
+}
+
+function activateBenchmarkRows() {
+  const groups = payload.model_groups || {};
+  const group = selectedTab === "overview" ? "basic"
+    : selectedTab === "advancedModels" ? "all" : selectedBenchmarkGroup;
+  const signature = `${group}|${selectedBenchmarkRun}`;
+  if (signature === activeBenchmarkSignature) return;
+  activeBenchmarkSignature = signature;
+  models = payload.models.filter(model => group === "all" || groups[model] === group);
+  const source = selectedBenchmarkRun === "all"
+    ? [...averagedBasicRows(), ...payload.rows.filter(row => groups[row.model] === "advanced")]
+    : payload.rows;
+  rows = source.filter(row => models.includes(row.model)
+    && (groups[row.model] === "advanced" || row.run_id === selectedBenchmarkRun));
+  ACROSS_CHART_ORDER = [...models, HEURISTIC_LABEL];
+  rebuildDerivedIndexes();
+}
+
+function applyBenchmarkSelection() {
+  activateBenchmarkRows();
+  selectedWithinTestModels = comparisonMethods();
+  selectedTTestModels = [];
+  selectedTTestWithinModels = [];
+  selectedOverviewFilters = {};
+  selectedTestFilters = {};
+  selectedAcrossDemandModels = [];
+  selectedWithinTTestFilters = { scenario_subtype: ["static", "seasonal"] };
+  selectedWithinTestIncludedLevels = [];
+  selectedTTestLevels = [];
+  selectedTTestWithinLevels = [];
+  const shared = comparableCases(() => true).length;
+  document.querySelector("#benchmarkRun").disabled = selectedBenchmarkGroup === "advanced";
+  benchmarkSelectionDescription =
+    `09-24 data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
+    + (selectedBenchmarkGroup === "advanced" ? "" : `Basic models use ${basicRunDescription()}. `)
+    + (selectedBenchmarkGroup === "basic" ? "" : "Advanced models use their single supplied run on 96 cases per scenario. ")
+    + "Across-model results use shared cases; within-model results use each model's available cases. Runs are not pooled. Changing these controls resets filters.";
+  render();
+}
+
 function rebuildDerivedIndexes() {
   rowsByModel = new Map(
     models.map(model => [model, rows.filter(row => row.model === model)])
@@ -1715,6 +1823,16 @@ function rebuildDerivedIndexes() {
   );
   regressionResultsById = new Map(Object.entries(payload.regression_results || {}));
   groundTruthByKey = new Map(Object.entries(payload.ground_truth_instances || {}));
+  for (const method of [HEURISTIC_LABEL, REGRESSION_LABEL]) {
+    const unique = new Map();
+    for (const row of rows) {
+      if (unique.has(row.case_key)) continue;
+      const benchmark = benchmarkRowFor(row, method);
+      if (benchmark) unique.set(row.case_key, benchmark);
+    }
+    rowsByModel.set(method, [...unique.values()]);
+    answeredRowsByModel.set(method, [...unique.values()]);
+  }
   withinFieldCache.clear();
   withinGroupSummaryCache.clear();
   tTestRowCache.clear();
@@ -2055,7 +2173,7 @@ function lossPlotDomain(allLosses) {
 }
 
 function renderDensityPlot(completed) {
-  const densityMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
+  const densityMethods = comparisonMethods();
   const allLosses = densityMethods.flatMap(method => benchmarkLosses(completed, method));
   const host = document.querySelector("#lossDensity");
   if (!allLosses.length) {
@@ -2065,8 +2183,8 @@ function renderDensityPlot(completed) {
   document.querySelector("#densityCutoffLabel").textContent = "Kernel density over 0-15% relative revenue loss";
 
   const width = 920;
-  const height = 330;
-  const margin = { top: 42, right: 24, bottom: 44, left: 68 };
+  const height = 410;
+  const margin = { top: 64, right: 24, bottom: 44, left: 68 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const domainMax = 0.15;
@@ -2133,14 +2251,15 @@ function renderDensityPlot(completed) {
   }).join("");
   const legend = densityMethods.map((model, index) => {
     const meta = modelMeta(model);
-    const lx = margin.left + index * 128;
+    const lx = margin.left + (index % 4) * 210;
+    const ly = 13 + Math.floor(index / 4) * 20;
     return `
       <g>
-        <line class="density-legend ${meta.colorClass}" x1="${lx}" x2="${lx + 18}" y1="13" y2="13"></line>
-        <text x="${lx + 25}" y="17">${meta.short}</text>
+        <line class="density-legend ${meta.colorClass}" x1="${lx}" x2="${lx + 18}" y1="${ly}" y2="${ly}"></line>
+        <text x="${lx + 25}" y="${ly + 4}">${meta.short}</text>
       </g>`;
   }).join("");
-  const insetWidth = 304;
+  const insetWidth = 430;
   const insetX = width - margin.right - insetWidth - 8;
   const insetY = margin.top + 10;
   const rowHeight = 23;
@@ -2156,9 +2275,9 @@ function renderDensityPlot(completed) {
         <line x1="${insetX + 10}" x2="${insetX + insetWidth - 10}" y1="${rowTop}" y2="${rowTop}" class="quartile-rule"></line>
         <circle class="quartile-marker ${meta.colorClass}" cx="${insetX + 14}" cy="${rowY - 4}" r="4"></circle>
         <text x="${insetX + 24}" y="${rowY}" text-anchor="start" class="quartile-model">${meta.short}</text>
-        <text x="${insetX + 171}" y="${rowY}" text-anchor="end">${fmtLoss(item.q25)}</text>
-        <text x="${insetX + 231}" y="${rowY}" text-anchor="end" class="quartile-median">${fmtLoss(item.q50)}</text>
-        <text x="${insetX + 293}" y="${rowY}" text-anchor="end">${fmtLoss(item.q75)}</text>
+        <text x="${insetX + 297}" y="${rowY}" text-anchor="end">${fmtLoss(item.q25)}</text>
+        <text x="${insetX + 357}" y="${rowY}" text-anchor="end" class="quartile-median">${fmtLoss(item.q50)}</text>
+        <text x="${insetX + 419}" y="${rowY}" text-anchor="end">${fmtLoss(item.q75)}</text>
       </g>`;
   }).join("");
   const quartileInset = `
@@ -2166,9 +2285,9 @@ function renderDensityPlot(completed) {
       <rect x="${insetX}" y="${insetY}" width="${insetWidth}" height="${insetHeight}" rx="10"></rect>
       <text x="${insetX + 10}" y="${insetY + 18}" text-anchor="start" class="quartile-title">Loss distribution quartiles</text>
       <text x="${insetX + 24}" y="${insetY + 40}" text-anchor="start" class="quartile-header">Method</text>
-      <text x="${insetX + 171}" y="${insetY + 40}" text-anchor="end" class="quartile-header">25th</text>
-      <text x="${insetX + 231}" y="${insetY + 40}" text-anchor="end" class="quartile-header">Median</text>
-      <text x="${insetX + 293}" y="${insetY + 40}" text-anchor="end" class="quartile-header">75th</text>
+      <text x="${insetX + 297}" y="${insetY + 40}" text-anchor="end" class="quartile-header">25th</text>
+      <text x="${insetX + 357}" y="${insetY + 40}" text-anchor="end" class="quartile-header">Median</text>
+      <text x="${insetX + 419}" y="${insetY + 40}" text-anchor="end" class="quartile-header">75th</text>
       ${quartileRows}
     </g>`;
 
@@ -2186,7 +2305,8 @@ function renderDensityPlot(completed) {
 }
 
 function renderCdfPlot(completed) {
-  const allLosses = models.flatMap(model => modelLosses(completed, model));
+  const models = comparisonMethods();
+  const allLosses = models.flatMap(model => benchmarkLosses(completed, model));
   const host = document.querySelector("#lossCdf");
   if (!allLosses.length) {
     host.innerHTML = `<p class="quiet">No complete matched cases available for CDF comparison.</p>`;
@@ -2195,7 +2315,7 @@ function renderCdfPlot(completed) {
 
   const width = 920;
   const height = 330;
-  const margin = { top: 42, right: 24, bottom: 44, left: 68 };
+  const margin = { top: 84, right: 24, bottom: 44, left: 68 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const { domainMax } = lossPlotDomain(allLosses);
@@ -2207,7 +2327,7 @@ function renderCdfPlot(completed) {
   const yTicks = [0, 0.25, 0.5, 0.75, 1];
 
   const paths = models.map(model => {
-    const values = modelLosses(completed, model).sort((a, b) => a - b);
+    const values = benchmarkLosses(completed, model).sort((a, b) => a - b);
     let pointer = 0;
     const curve = grid.map(xValue => {
       while (pointer < values.length && values[pointer] <= xValue) pointer += 1;
@@ -2238,11 +2358,12 @@ function renderCdfPlot(completed) {
   }).join("");
   const legend = models.map((model, index) => {
     const meta = modelMeta(model);
-    const lx = margin.left + index * 168;
+    const lx = margin.left + (index % 3) * 280;
+    const ly = 13 + Math.floor(index / 3) * 20;
     return `
       <g>
-        <line class="density-legend ${meta.colorClass}" x1="${lx}" x2="${lx + 18}" y1="13" y2="13"></line>
-        <text x="${lx + 25}" y="17">${model}</text>
+        <line class="density-legend ${meta.colorClass}" x1="${lx}" x2="${lx + 18}" y1="${ly}" y2="${ly}"></line>
+        <text x="${lx + 25}" y="${ly + 4}">${model}</text>
       </g>`;
   }).join("");
 
@@ -2259,11 +2380,11 @@ function renderCdfPlot(completed) {
 }
 
 function renderDifferenceDensityPlot(completed) {
-  const pairs = [
-    { modelA: "Gemini 2.5 Flash", modelB: "Claude Haiku 4.5", colorClass: "pair-three" },
-    { modelA: "Gemini 2.5 Flash", modelB: "GPT-5 mini", colorClass: "pair-one" },
-  ];
-  const pairDiffSets = pairs.map(pair => pairedDiffs(completed, pair.modelA, pair.modelB));
+  const methods = comparisonMethods();
+  const pairs = methods.slice(1).map(model => ({
+    modelA: methods[0], modelB: model, colorClass: modelMeta(model).colorClass,
+  }));
+  const pairDiffSets = pairs.map(pair => pairedBenchmarkDiffs(completed, pair.modelA, pair.modelB));
   const allDiffs = pairDiffSets.flat();
   const host = document.querySelector("#diffDensity");
   if (!allDiffs.length) {
@@ -2273,7 +2394,7 @@ function renderDifferenceDensityPlot(completed) {
 
   const width = 920;
   const height = 330;
-  const margin = { top: 42, right: 24, bottom: 44, left: 68 };
+  const margin = { top: 106, right: 24, bottom: 44, left: 68 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const domainMin = -0.10;
@@ -2325,16 +2446,17 @@ function renderDifferenceDensityPlot(completed) {
       </g>`;
   }).join("");
   const legend = pairs.map((pair, index) => {
-    const lx = margin.left + index * 168;
+    const lx = margin.left + (index % 2) * 420;
+    const ly = 13 + Math.floor(index / 2) * 22;
     return `
       <g>
-        <line class="density-legend ${pair.colorClass}" x1="${lx}" x2="${lx + 18}" y1="13" y2="13"></line>
-        <text x="${lx + 25}" y="17">${pairLabel(pair.modelA, pair.modelB)}</text>
+        <line class="density-legend ${pair.colorClass}" x1="${lx}" x2="${lx + 18}" y1="${ly}" y2="${ly}"></line>
+        <text x="${lx + 25}" y="${ly + 4}">${pairLabel(pair.modelA, pair.modelB)}</text>
       </g>`;
   }).join("");
 
   host.innerHTML = `
-    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Density plot of Gemini paired relative revenue loss differences from minus ten to plus ten percent">
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Density plot of paired relative revenue loss differences from minus ten to plus ten percent">
       <g class="hist-legend">${legend}</g>
       <g class="hist-axis">${xAxis}${yAxis}</g>
       <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
@@ -2432,7 +2554,9 @@ function pairedDifferenceEvidenceFromDiffs(diffs, seed) {
   const t = Number.isFinite(se) && se > 0 ? avg / se : NaN;
   const tP = Number.isFinite(t) ? 2 * (1 - normalCdf(Math.abs(t))) : NaN;
   const random = seededRandom(seed);
-  const reps = 1500;
+  // The t-test p-value is analytic; 600 fixed-seed resamples make the displayed
+  // bootstrap interval stable while keeping interactive filtering responsive.
+  const reps = BOOTSTRAP_REPS;
   const bootMeans = [];
   if (n) {
     for (let rep = 0; rep < reps; rep += 1) {
@@ -2522,11 +2646,11 @@ function renderTests() {
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
   document.querySelector("#testsNote").innerHTML =
-    `<strong>${fmtInt(comparisonCases.length)} complete matched cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}.${showRegression ? ` Regression Heuristic is included for the ${fmtInt(benchmarkCases.length)} static cases with an eligible regression output.` : ` Heuristic mean loss uses ${fmtInt(benchmarkCases.length)} of those same cases with a valid heuristic benchmark.`} Mean differences are first method minus second method; negative values favor the first method.</span>`;
+    `<strong>${fmtInt(comparisonCases.length)} complete matched cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}.${showRegression ? ` Regression Heuristic is included for the ${fmtInt(benchmarkCases.length)} cases with an eligible regression output.` : ` Heuristic mean loss uses ${fmtInt(benchmarkCases.length)} of those same cases with a valid heuristic benchmark.`} Mean differences are first method minus second method; negative values favor the first method.</span>`;
 
-  renderDensityPlot(completed);
-  renderCdfPlot(completed);
-  renderDifferenceDensityPlot(completed);
+  renderDensityPlot(comparisonCases);
+  renderCdfPlot(comparisonCases);
+  renderDifferenceDensityPlot(comparisonCases);
 
   const pairResults = tTestPairs(benchmarkMethods).map(([modelA, modelB], index) => ({
     modelA,
@@ -2658,6 +2782,31 @@ function tTestPairs(methods) {
     }
   }
   return pairs;
+}
+
+function cachedEvidence(cache, key, compute) {
+  const existing = cache.get(key);
+  if (existing) return existing;
+  // Filter combinations are user-driven. Bound memory if many unique combinations are explored.
+  if (cache.size > 2500) cache.clear();
+  const result = compute();
+  cache.set(key, result);
+  return result;
+}
+
+function cachedAcrossTTestEvidence(scope, caseRows, modelA, modelB, seed) {
+  const key = [
+    scope,
+    modelA,
+    modelB,
+    seed,
+    tTestFilterSignature(),
+  ].join("||");
+  return cachedEvidence(
+    tTestEvidenceCache,
+    key,
+    () => pairedEvidenceForMethods(caseRows, modelA, modelB, seed)
+  );
 }
 
 function pairedEvidenceForMethods(caseRows, modelA, modelB, seed) {
@@ -2856,7 +3005,7 @@ function populateAcrossTTestControls() {
 }
 
 function populateWithinTTestControls() {
-  const availableMethods = availableTTestMethods();
+  const availableMethods = comparisonMethods();
   selectedTTestWithinModels = selectedValuesOrAll(selectedTTestWithinModels, availableMethods, 1);
 
   const modelHost = document.querySelector("#tTestWithinModelList");
@@ -2904,6 +3053,177 @@ function populateWithinTTestControls() {
   );
 }
 
+function basicRunComparisonModels() {
+  return payload.models.filter(model => payload.model_groups?.[model] === "basic");
+}
+
+function basicRunComparisonCases(model, runA, runB) {
+  const byRunAndCase = new Map();
+  payload.rows.forEach(row => {
+    if (row.model !== model || ![runA, runB].includes(Number(row.run_id))) return;
+    if (!passesTestFilters(row) || !row.answered || !Number.isFinite(row.rel_rev_loss)) return;
+    const entry = byRunAndCase.get(row.case_key) || { reference: row };
+    entry[Number(row.run_id)] = row;
+    byRunAndCase.set(row.case_key, entry);
+  });
+  return [...byRunAndCase.values()].filter(entry =>
+    entry[runA] && entry[runB]
+      && Number.isFinite(entry[runA].rel_rev_loss)
+      && Number.isFinite(entry[runB].rel_rev_loss)
+  );
+}
+
+function renderBasicRunComparisons() {
+  const basicModels = basicRunComparisonModels();
+  const availableRuns = (payload.basic_runs || []).map(Number).filter(Number.isFinite);
+  if (!basicModels.includes(selectedRunComparisonModel)) {
+    selectedRunComparisonModel = basicModels[0] || "";
+  }
+  const validSelected = selectedRunComparisonRuns.filter(run => availableRuns.includes(run));
+  selectedRunComparisonRuns = validSelected.length >= 2
+    ? validSelected
+    : availableRuns.slice(0, 2);
+
+  const modelPicker = document.querySelector("#runComparisonModel");
+  modelPicker.innerHTML = basicModels.length
+    ? basicModels.map(model => `<option value="${model}">${model}</option>`).join("")
+    : `<option value="">No basic models available</option>`;
+  modelPicker.value = selectedRunComparisonModel;
+
+  const runHost = document.querySelector("#runComparisonRunList");
+  const runSummary = document.querySelector("#runComparisonRunSummary");
+  runHost.innerHTML = availableRuns.map(run => `
+    <label class="checkbox-chip">
+      <input type="checkbox" value="${run}" ${selectedRunComparisonRuns.includes(run) ? "checked" : ""}>
+      <span>Run ${run}</span>
+    </label>
+  `).join("");
+  runSummary.textContent = availableRuns.length
+    ? `${fmtInt(selectedRunComparisonRuns.length)} of ${fmtInt(availableRuns.length)} runs selected`
+    : "No runs available";
+
+  const eligibleRows = payload.rows.filter(row =>
+    row.model === selectedRunComparisonModel && passesTestFilters(row)
+  );
+  const validFields = Object.keys(GROUP_OPTIONS).filter(field =>
+    new Set(eligibleRows.map(row => levelValue(row[field]))).size
+  );
+  if (!validFields.includes(selectedRunComparisonField)) {
+    selectedRunComparisonField = validFields.includes("demand_model")
+      ? "demand_model"
+      : (validFields[0] || "");
+  }
+  const splitFieldPicker = document.querySelector("#runComparisonField");
+  splitFieldPicker.innerHTML = validFields.length
+    ? validFields.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("")
+    : `<option value="">No variables available</option>`;
+  splitFieldPicker.value = selectedRunComparisonField;
+  const availableLevels = selectedRunComparisonField
+    ? sortLevelValues([...new Set(eligibleRows.map(row => levelValue(row[selectedRunComparisonField])))])
+    : [];
+  const validLevels = selectedRunComparisonLevels.filter(level => availableLevels.includes(level));
+  selectedRunComparisonLevels = validLevels.length ? validLevels : [...availableLevels];
+  const levelHost = document.querySelector("#runComparisonLevelList");
+  const levelSummary = document.querySelector("#runComparisonLevelSummary");
+  levelHost.innerHTML = availableLevels.length
+    ? availableLevels.map(level => `
+        <label class="checkbox-chip">
+          <input type="checkbox" value="${level}" ${selectedRunComparisonLevels.includes(level) ? "checked" : ""}>
+          <span>${displayLevel(level)}</span>
+        </label>
+      `).join("")
+    : `<p class="quiet">No split levels available.</p>`;
+  levelSummary.textContent = availableLevels.length
+    ? `${fmtInt(selectedRunComparisonLevels.length)} of ${fmtInt(availableLevels.length)} levels selected`
+    : "No split levels available";
+
+  const pairs = tTestPairs(selectedRunComparisonRuns);
+  const activeFilters = activeTestFilterLabels();
+  const evidence = pairs.map(([runA, runB], index) => {
+    const cases = basicRunComparisonCases(selectedRunComparisonModel, runA, runB);
+    return {
+      runA,
+      runB,
+      cases,
+      result: cachedEvidence(
+        runComparisonEvidenceCache,
+        [
+          "overall",
+          selectedRunComparisonModel,
+          runA,
+          runB,
+          88121 + index * 211,
+          tTestFilterSignature(),
+        ].join("||"),
+        () => pairedDifferenceEvidenceFromDiffs(
+          cases.map(entry => entry[runA].rel_rev_loss - entry[runB].rel_rev_loss),
+          88121 + index * 211
+        )
+      ),
+    };
+  });
+  const uniqueCases = new Set(evidence.flatMap(item => item.cases.map(entry => entry.reference.case_key))).size;
+  document.querySelector("#caseCount").textContent = fmtInt(new Set(eligibleRows.map(row => row.case_key)).size);
+  document.querySelector("#completeCount").textContent = fmtInt(uniqueCases);
+  document.querySelector("#sourceCount").textContent = fmtInt(eligibleRows.length);
+  const modelLabel = selectedRunComparisonModel;
+  document.querySelector("#runComparisonNote").innerHTML = pairs.length
+    ? `<strong>${fmtInt(uniqueCases)} input cases available across the selected run pairs</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${modelLabel}</strong> across ${fmtInt(selectedRunComparisonRuns.length)} runs. Each row pairs the same input case between two runs. Mean differences are Run A minus Run B; negative values favor Run A. These tests assess variation between repeated model runs, not differences between different models.</span>`
+    : `<strong>Select at least 2 runs</strong><span>Choose two or more runs to compare repeated outputs for the same basic model.</span>`;
+
+  document.querySelector("#runComparisonOverallTable tbody").innerHTML = evidence.length
+    ? evidence.map(({ runA, runB, result }) => `
+        <tr><th>Run ${runA} − Run ${runB}</th><td>${fmtInt(result.n)}</td>
+        <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+        <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+        <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td></tr>`
+      ).join("")
+    : `<tr><td colspan="5" class="quiet">No run-pair t tests are shown until at least two runs are selected.</td></tr>`;
+
+  const levelDetails = document.querySelector("#runComparisonLevelsDetails");
+  const byLevel = levelDetails.open ? selectedRunComparisonLevels.flatMap((level, levelIndex) =>
+    evidence.map(({ runA, runB, cases }, pairIndex) => {
+      const levelCases = cases.filter(entry => levelValue(entry.reference[selectedRunComparisonField]) === level);
+      return {
+        level,
+        runA,
+        runB,
+        result: cachedEvidence(
+          runComparisonEvidenceCache,
+          [
+            "level",
+            selectedRunComparisonModel,
+            selectedRunComparisonField,
+            level,
+            runA,
+            runB,
+            91321 + levelIndex * 1009 + pairIndex * 113,
+            tTestFilterSignature(),
+          ].join("||"),
+          () => pairedDifferenceEvidenceFromDiffs(
+            levelCases.map(entry => entry[runA].rel_rev_loss - entry[runB].rel_rev_loss),
+            91321 + levelIndex * 1009 + pairIndex * 113
+          )
+        ),
+      };
+    })
+  ) : [];
+  document.querySelector("#runComparisonByLevelTable tbody").innerHTML = byLevel.length
+    ? byLevel.map(({ level, runA, runB, result }) => `
+        <tr><th>${displayLevel(level)}</th><td>Run ${runA} − Run ${runB}</td><td>${fmtInt(result.n)}</td>
+        <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+        <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
+        <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td></tr>`
+      ).join("")
+    : `<tr><td colspan="6" class="quiet">${levelDetails.open ? "No level-based run comparisons are available for the selected split variable and filters." : "Open this section to calculate split-level results."}</td></tr>`;
+}
+
+function renderRunTTests() {
+  setupRunTTestFilterPanel();
+  populateTestFilterControls();
+  renderBasicRunComparisons();
+}
+
 function renderAcrossTTests() {
   populateAcrossTTestControls();
   const selectedMethods = selectedTTestModels;
@@ -2934,7 +3254,13 @@ function renderAcrossTTests() {
   const overallRows = pairs.map(([modelA, modelB], index) => ({
     modelA,
     modelB,
-    result: pairedEvidenceForMethods(caseRows, modelA, modelB, 55121 + index * 101),
+    result: cachedAcrossTTestEvidence(
+      `overall:${selectedMethods.join(",")}`,
+      caseRows,
+      modelA,
+      modelB,
+      55121 + index * 101
+    ),
   }));
 
   document.querySelector("#tTestAcrossOverallTable tbody").innerHTML = overallRows.length
@@ -2948,15 +3274,22 @@ function renderAcrossTTests() {
         </tr>`).join("")
     : `<tr><td colspan="5" class="quiet">No overall t tests are available.</td></tr>`;
 
-  const levelRows = selectedTTestLevels.flatMap((level, levelIndex) => {
+  const levelDetails = document.querySelector("#tTestAcrossLevelsDetails");
+  const levelRows = levelDetails.open ? selectedTTestLevels.flatMap((level, levelIndex) => {
     const levelCases = caseRows.filter(item => levelValue(item[models[0]]?.[selectedTTestField]) === level);
     return pairs.map(([modelA, modelB], pairIndex) => ({
       level,
       modelA,
       modelB,
-      result: pairedEvidenceForMethods(levelCases, modelA, modelB, 61721 + levelIndex * 1009 + pairIndex * 97),
+      result: cachedAcrossTTestEvidence(
+        `level:${selectedMethods.join(",")}:${selectedTTestField}:${level}`,
+        levelCases,
+        modelA,
+        modelB,
+        61721 + levelIndex * 1009 + pairIndex * 97
+      ),
     }));
-  });
+  }) : [];
 
   document.querySelector("#tTestAcrossByLevelTable tbody").innerHTML = levelRows.length
     ? levelRows.map(({ level, modelA, modelB, result }) => `
@@ -2968,7 +3301,7 @@ function renderAcrossTTests() {
           <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
           <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td>
         </tr>`).join("")
-    : `<tr><td colspan="6" class="quiet">No level-based t tests are available for the selected variable and levels.</td></tr>`;
+    : `<tr><td colspan="6" class="quiet">${levelDetails.open ? "No level-based t tests are available for the selected variable and levels." : "Open this section to calculate split-level results."}</td></tr>`;
 }
 
 function renderWithinTTests() {
@@ -3222,6 +3555,14 @@ function renderTTests() {
 }
 
 function renderOverview() {
+  const averagesSection = document.querySelector("#averagedRunDetails");
+  averagesSection.hidden = selectedTab !== "overview" || selectedBenchmarkRun !== "all";
+  if (!averagesSection.hidden) renderAllRuns();
+  if (selectedTab === "advancedModels") {
+    document.querySelector("#advancedOverviewSlot").append(document.querySelector("#overviewContent"));
+  } else {
+    document.querySelector("#overview").prepend(document.querySelector("#overviewContent"));
+  }
   populateOverviewFilterControls();
   const cases = comparableCases(passesOverviewFilters);
   const completed = completeCases(cases);
@@ -3481,7 +3822,7 @@ function renderOverview() {
 
   if (overviewStaticNoteEl) {
     overviewStaticNoteEl.innerHTML = staticBenchmarkCompleted.length
-      ? `<strong>${fmtInt(staticBenchmarkCompleted.length)} filtered static benchmark cases with regression output</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This section keeps only the <strong>static</strong> cases from the current overview filter set and compares <strong>GPT</strong>, <strong>Gemini</strong>, <strong>Claude</strong>, <strong>Heuristic</strong>, and <strong>Regression Heuristic</strong> on the same case set. Regression Heuristic uses the absolute <strong>revenue gap</strong> from <strong>Revenue_hat</strong> to <strong>Revenue_star</strong> as its loss measure.</span>`
+      ? `<strong>${fmtInt(staticBenchmarkCompleted.length)} filtered static benchmark cases with regression output</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This section keeps only the <strong>static</strong> cases from the current overview filter set and compares the selected AI models, <strong>Heuristic</strong>, and <strong>Regression Heuristic</strong> on the same case set. Regression Heuristic uses the absolute <strong>revenue gap</strong> from <strong>Revenue_hat</strong> to <strong>Revenue_star</strong> as its loss measure.</span>`
       : `<strong>No static benchmark cases with regression output for the current filters</strong><span>Try including <strong>static</strong> in the scenario filter or relaxing the current overview filters.</span>`;
   }
 
@@ -3634,6 +3975,7 @@ function renderOverview() {
           </tr>`).join("")
       : `<tr><td colspan="10" class="quiet">No static regression fitted revenues match the current overview filters.</td></tr>`;
   }
+  if (selectedTab === "advancedModels") renderAdvancedCaseTable(cases, completed);
 }
 
 function renderWithinTests() {
@@ -4258,141 +4600,146 @@ function renderGroundTruth() {
   const maxDemand = Math.max(...points.map(point => point[1]), 1);
   const revenuePoints = points.map(([price, demand]) => [price, price * demand]);
   const maxRevenue = Math.max(...revenuePoints.map(point => point[1]), 1);
-  const width = 920, height = 440, margin = { left: 78, right: 24, top: 36, bottom: 66 };
+  const width = 920, height = 490, margin = { left: 78, right: 24, top: 100, bottom: 66 };
   const x = value => margin.left + (value - pMin) / (pMax - pMin) * (width - margin.left - margin.right);
   const y = value => height - margin.bottom - value / maxDemand * (height - margin.top - margin.bottom);
   const curve = points.map(([price, demand], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${y(demand).toFixed(1)}`).join(" ");
   const revenueY = value => height - margin.bottom - value / maxRevenue * (height - margin.top - margin.bottom);
   const revenueCurve = revenuePoints.map(([price, revenue], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${revenueY(revenue).toFixed(1)}`).join(" ");
+  const markerColors = ["#4677c6", "#ca6b96", "#e68a3b", "#287b83", "#9a6229", "#777777", "#4d8f68", "#7a5ca5"];
   const markers = summaries.filter(item => Number.isFinite(item.price)).map((item, index) => {
-    const color = ["#4677c6", "#ca6b96", "#e68a3b", "#4d8f68", "#7a5ca5"][index];
+    const color = markerColors[summaries.indexOf(item) % markerColors.length];
     return `<line x1="${x(item.price)}" x2="${x(item.price)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="${color}" stroke-width="2" stroke-dasharray="5 4"/>`;
   }).join("");
   const priceTicks = Array.from({ length: 6 }, (_, index) => pMin + (pMax - pMin) * index / 5);
   const xAxis = priceTicks.map(price => `<line x1="${x(price)}" x2="${x(price)}" y1="${height - margin.bottom}" y2="${height - margin.bottom + 6}" stroke="#4c5966"/><text x="${x(price)}" y="${height - margin.bottom + 24}" text-anchor="middle" font-size="12">${price.toFixed(0)}</text>`).join("");
-  const legendItems = [{ label: "True demand", color: "#1f5f98" }, { label: "P*", color: "#d94f45" }, ...summaries.map((item, index) => ({ label: modelMeta(item.model).short, color: ["#4677c6", "#ca6b96", "#e68a3b", "#4d8f68", "#7a5ca5"][index] }))];
-  const legend = legendItems.map((item, index) => { const lx = 92 + index * 130; return `<line x1="${lx}" x2="${lx + 18}" y1="18" y2="18" stroke="${item.color}" stroke-width="3"/><text x="${lx + 24}" y="22" font-size="12" fill="#334155">${item.label}</text>`; }).join("");
+  const legendItems = [{ label: "Ground truth", color: "#1f5f98" }, { label: "P*", color: "#d94f45" }, ...summaries.map((item, index) => ({ label: modelMeta(item.model).short, color: markerColors[index % markerColors.length] }))];
+  const legend = legendItems.map((item, index) => { const lx = 78 + (index % 4) * 210; const ly = 18 + Math.floor(index / 4) * 24; return `<line x1="${lx}" x2="${lx + 18}" y1="${ly}" y2="${ly}" stroke="${item.color}" stroke-width="3"/><text x="${lx + 24}" y="${ly + 4}" font-size="12" fill="#334155">${item.label}</text>`; }).join("");
   document.querySelector("#groundTruthChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth demand curve and model price estimates">${legend}<path d="${curve}" fill="none" stroke="#1f5f98" stroke-width="3"/><line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth demand</text></svg>`;
   document.querySelector("#groundTruthRevenueChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth revenue curve and model price estimates">${legend}<path d="${revenueCurve}" fill="none" stroke="#1f5f98" stroke-width="3"/><line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P* / R*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth revenue</text></svg>`;
   document.querySelector("#groundTruthNote").innerHTML = `<strong>${entry.dataset} · ${displayLevel(entry.model)} · parameter ${entry.letter.toUpperCase()}</strong><span>Curves use the supplied ground-truth parameters. Colored markers are mean recommended prices across the prompt variants for this instance; the price range expands automatically to include every displayed estimate.${entry.dataset === "duopoly" ? ` The curve holds competitor price at ${entry.p1_true.toFixed(2)}.` : ""}</span>`;
   document.querySelector("#groundTruthEstimateTable tbody").innerHTML = summaries.map(item => `<tr><th>${modelMeta(item.model).short}</th><td>${item.price.toFixed(2)}</td><td>${(item.price - entry.p_star).toFixed(2)}</td><td>${fmtNum(item.revenue)}</td><td>${fmtPct(item.revenueGap)}</td><td>${fmtLoss(item.loss)}</td></tr>`).join("");
 }
 
-function renderSupplemental() {
-  const experiments = payload.supplemental_experiments || [];
-  const baseRowsByCase = new Map(rows.map(row => [`${row.model}|${row.case_key}`, row]));
-  const originalMethods = [...models, HEURISTIC_LABEL, REGRESSION_LABEL];
-  const originalLossFor = (row, method) => {
-    if (method === HEURISTIC_LABEL) return baseRowsByCase.get(`${models[0]}|${row.case_key}`)?.heuristic_rel_rev_loss;
-    if (method === REGRESSION_LABEL) {
-      const fit = regressionForRow(row);
-      return fit && regressionIsEligible(fit) ? Math.abs(fit.revenue_pct_gap) : NaN;
-    }
-    return baseRowsByCase.get(`${method}|${row.case_key}`)?.rel_rev_loss;
-  };
-  const totalRows = experiments.reduce((total, experiment) => total + experiment.rows.length, 0);
-  document.querySelector("#caseCount").textContent = fmtInt(totalRows);
-  document.querySelector("#completeCount").textContent = fmtInt(experiments.reduce((total, experiment) => total + experiment.rows.filter(row => row.answered).length, 0));
-  document.querySelector("#sourceCount").textContent = fmtInt(totalRows);
-  document.querySelector("#supplementalNote").innerHTML = `<strong>${fmtInt(experiments.length)} supplemental experiments loaded</strong><span>These results use changed prompts, noise processes, price ranges, or a model subset. They are intentionally kept separate from the core benchmark. Every comparison below uses the exact matched cases available in both conditions.</span>`;
-  document.querySelector("#supplementalTable tbody").innerHTML = experiments.map(experiment => {
-    const answered = experiment.rows.filter(row => row.answered && Number.isFinite(row.rel_rev_loss));
-    const directions = answered.reduce((counts, row) => {
-      const direction = priceDirection(row);
-      if (direction) counts[direction] += 1;
-      return counts;
-    }, { under: 0, similar: 0, over: 0 });
-    const referencePairs = answered.map(row => ({ row, reference: baseRowsByCase.get(`${experiment.reference_model}|${row.case_key}`) }))
-      .filter(pair => Number.isFinite(pair.reference?.rel_rev_loss));
-    const meanDifference = mean(referencePairs.map(pair => pair.row.rel_rev_loss - pair.reference.rel_rev_loss));
-    return `<tr><th>${experiment.name}<br><span class="quiet">${experiment.description}</span></th><td>${fmtInt(answered.length)}</td><td>${fmtLoss(mean(answered.map(row => row.rel_rev_loss)))}</td><td>${fmtPct(shareWhere(answered.map(row => row.rel_rev_loss), loss => loss <= NEAR_OPTIMAL_THRESHOLD))}</td><td>${fmtPct(shareWhere(answered.map(row => row.rel_rev_loss), loss => loss >= SEVERE_LOSS_THRESHOLD))}</td><td>${fmtPct(directions.under / answered.length)} / ${fmtPct(directions.similar / answered.length)} / ${fmtPct(directions.over / answered.length)}</td><td>${experiment.reference_model}<br><span class="quiet">${fmtInt(referencePairs.length)} matched</span></td><td>${fmtSignedLoss(meanDifference)}<br><span class="quiet">experiment minus reference</span></td></tr>`;
-  }).join("") || `<tr><td colspan="8" class="quiet">No supplemental experiments were loaded.</td></tr>`;
-  const matchedRows = experiments.flatMap(experiment => {
-    const answered = experiment.rows.filter(row => row.answered && Number.isFinite(row.rel_rev_loss));
-    return originalMethods.map(method => {
-      const pairs = answered.map(row => {
-        const originalLoss = originalLossFor(row, method);
-        return { supplementalLoss: row.rel_rev_loss, originalLoss };
-      }).filter(pair => Number.isFinite(pair.originalLoss));
-      return { experiment, method, pairs };
-    });
-  });
-  document.querySelector("#supplementalMatchedTable tbody").innerHTML = matchedRows.length
-    ? matchedRows.map(({ experiment, method, pairs }) => {
-        const supplementalMean = mean(pairs.map(pair => pair.supplementalLoss));
-        const originalMean = mean(pairs.map(pair => pair.originalLoss));
-        return `<tr><th>${experiment.name}</th><td>${modelMeta(method).short}</td><td>${fmtInt(pairs.length)}</td><td>${fmtLoss(supplementalMean)}</td><td>${fmtLoss(originalMean)}</td><td class="${supplementalMean < originalMean ? "winner-cell" : ""}">${fmtSignedLoss(supplementalMean - originalMean)}</td></tr>`;
-      }).join("")
-    : `<tr><td colspan="6" class="quiet">No matched supplemental comparisons are available.</td></tr>`;
 
-  const fable = experiments.find(experiment => experiment.id === "fable_static_subset");
-  const fableChart = document.querySelector("#supplementalFableChart");
-  if (fableChart) {
-    const fableRows = fable?.rows.filter(row => row.answered && Number.isFinite(row.rel_rev_loss)) || [];
-    const fableItems = fable ? [
-      { model: fable.model, meanLoss: mean(fableRows.map(row => row.rel_rev_loss)) },
-      ...originalMethods.map(method => {
-        const pairs = fableRows.map(row => originalLossFor(row, method)).filter(Number.isFinite);
-        return { model: method, meanLoss: mean(pairs) };
-      }),
-    ].filter(item => Number.isFinite(item.meanLoss)) : [];
-    fableChart.innerHTML = renderAcrossMeanChart(fableItems, {
-      width: 780,
-      labels: { "Regression Heuristic": "Regression" },
-    });
+
+
+function renderAdvancedCaseTable(cases, completed) {
+  const aiMethods = payload.models;
+  const methods = [...aiMethods, HEURISTIC_LABEL, REGRESSION_LABEL];
+  const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
+  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The full overview above compares the six AI models, Heuristic, and eligible Regression Heuristic results. Regression eligibility can reduce the leaderboard case count. All six AI recommendations are shown below, including incomplete answers. Basic models use ${basicRunDescription()}; advanced models use their single supplied run.</span>`;
+  document.querySelector("#advancedModelsCases thead").innerHTML = `<tr><th>Case / matching inputs</th><th>Scenario</th><th>Demand model</th><th>P*</th>${methods.map(model => `<th>${escape(model)}<br><span class="quiet">Price / loss</span></th>`).join("")}</tr>`;
+  document.querySelector("#advancedModelsCases tbody").innerHTML = cases.map(entry => {
+    const row = entry[methods[0]];
+    const inputs = payload.input_columns.filter(field => !["instance_id", "p_star", "scenario_subtype", "demand_model"].includes(field))
+      .map(field => `<div><strong>${escape(GROUP_OPTIONS[field] || field)}:</strong> ${escape(displayLevel(levelValue(row[field])))}</div>`).join("");
+    const complete = aiMethods.every(model => entry[model].answered);
+    const cells = methods.map(model => {
+      const result = aiMethods.includes(model) ? entry[model] : benchmarkRowFor(row, model);
+      if (!result) {
+        const fit = model === REGRESSION_LABEL ? regressionForRow(row) : null;
+        return `<td>${fmtNum(fit?.p_hat)}<br><span class="quiet">${fit?.fit_status === "infeasible" ? "Infeasible: excluded" : "Unavailable"}</span></td>`;
+      }
+      return `<td>${fmtNum(result.ai_answer)}<br>${result.answered ? fmtLoss(result.rel_rev_loss) : '<span class="quiet">Incomplete answer</span>'}</td>`;
+    }).join("");
+    return `<tr><th><details><summary>${escape(row.instance_id)}${complete ? "" : " (incomplete)"}</summary>${inputs}</details></th><td>${escape(displayLevel(row.scenario_subtype))}</td><td>${escape(displayLevel(row.demand_model))}</td><td>${fmtNum(row.p_star)}</td>${cells}</tr>`;
+  }).join("") || `<tr><td colspan="${methods.length + 4}">No shared cases match these filters.</td></tr>`;
+}
+
+function basicAllRunCases() {
+  if (allRunsCaseCache) return allRunsCaseCache;
+  const methods = payload.models.filter(model => payload.model_groups[model] === "basic");
+  const runIds = payload.basic_runs;
+  const byCase = new Map();
+  for (const row of payload.rows) {
+    if (!methods.includes(row.model)) continue;
+    const entry = byCase.get(row.case_key) || { row, methods: {} };
+    entry.methods[row.model] ||= {};
+    entry.methods[row.model][row.run_id] = row;
+    byCase.set(row.case_key, entry);
   }
+  const cases = [...byCase.values()].filter(entry => methods.every(model => runIds.every(run => entry.methods[model]?.[run])));
+  const aiMethods = [...methods];
+  const baselines = [HEURISTIC_LABEL, REGRESSION_LABEL];
+  methods.push(...baselines);
+  for (const entry of cases) {
+    for (const model of baselines) entry.methods[model] = { fixed: benchmarkRowFor(entry.row, model) };
+    entry.complete = baselines.every(model => entry.methods[model].fixed?.p_star > 0)
+      && aiMethods.every(model => runIds.every(run => {
+      const row = entry.methods[model][run];
+      return row.answered && Number.isFinite(row.ai_answer) && Number.isFinite(row.rel_rev_loss) && Number.isFinite(row.p_star) && row.p_star > 0;
+    }));
+    entry.averages = {};
+    if (!entry.complete) continue;
+    for (const model of methods) {
+      const runRows = baselines.includes(model) ? [entry.methods[model].fixed] : runIds.map(run => entry.methods[model][run]);
+      entry.averages[model] = {
+        meanLoss: mean(runRows.map(row => row.rel_rev_loss)),
+        signedGap: mean(runRows.map(row => row.ai_answer - row.p_star)),
+        absoluteGap: mean(runRows.map(row => Math.abs(row.ai_answer - row.p_star))),
+        signedRelativeGap: mean(runRows.map(row => (row.ai_answer - row.p_star) / row.p_star)),
+        absoluteRelativeGap: mean(runRows.map(row => Math.abs(row.ai_answer - row.p_star) / row.p_star)),
+      };
+    }
+  }
+  allRunsCaseCache = { methods, aiMethods, baselines, runIds, cases };
+  return allRunsCaseCache;
+}
 
-  const additive = experiments.find(experiment => experiment.id === "gpt_additive_static");
-  const additivePicker = document.querySelector("#supplementalAdditiveGroup");
-  const additiveChart = document.querySelector("#supplementalAdditiveChart");
-  const additiveNote = document.querySelector("#supplementalAdditiveNote");
-  if (!additivePicker || !additiveChart || !additiveNote) return;
-  const additivePairs = (additive?.rows || []).filter(row => row.answered).map(row => ({
-    additive: row,
-    multiplicativeLoss: originalLossFor(row, "GPT-5 mini"),
-  })).filter(pair => Number.isFinite(pair.multiplicativeLoss));
-  const availableGroups = Object.keys(GROUP_OPTIONS).filter(field => new Set(additivePairs.map(pair => levelValue(pair.additive[field]))).size > 1);
-  if (!availableGroups.includes(selectedSupplementalAdditiveGroup)) selectedSupplementalAdditiveGroup = availableGroups[0] || "demand_model";
-  additivePicker.innerHTML = availableGroups.map(field => `<option value="${field}">${GROUP_OPTIONS[field]}</option>`).join("");
-  additivePicker.value = selectedSupplementalAdditiveGroup;
-  const levels = [...new Set(additivePairs.map(pair => levelValue(pair.additive[selectedSupplementalAdditiveGroup])))]
-    .sort((a, b) => displayLevel(a).localeCompare(displayLevel(b), undefined, { numeric: true }));
-  const chartItems = levels.map(level => {
-    const pairs = additivePairs.filter(pair => levelValue(pair.additive[selectedSupplementalAdditiveGroup]) === level);
-    return {
-      title: displayLevel(level), leftLabel: "Additive", rightLabel: "Multiplicative",
-      leftMean: mean(pairs.map(pair => pair.additive.rel_rev_loss)),
-      rightMean: mean(pairs.map(pair => pair.multiplicativeLoss)),
-      leftClass: "pair-one", rightClass: "pair-two",
-    };
-  });
-  additiveNote.textContent = `${fmtInt(additivePairs.length)} exactly matched GPT cases. Purple = additive noise; pink = original multiplicative noise. Each group uses the same cases in both conditions.`;
-  additiveChart.innerHTML = renderPairMeanCards(chartItems, {
-    showPValues: false,
-    showValues: true,
-    legend: {
-      leftLabel: "Additive noise",
-      leftClass: "pair-one",
-      rightLabel: "Multiplicative noise",
-      rightClass: "pair-two",
-    },
-  });
+function renderAllRuns() {
+  const { methods, baselines, runIds, cases } = basicAllRunCases();
+  const filtered = cases.filter(entry => passesOverviewFilters(entry.row));
+  const complete = filtered.filter(entry => entry.complete);
+  const summaries = methods.map(model => ({model, ...Object.fromEntries(["meanLoss", "signedGap", "absoluteGap", "signedRelativeGap", "absoluteRelativeGap"].map(key => [key, mean(complete.map(entry => entry.averages[model][key]))]))}));
+  document.querySelector("#allRunsNote").innerHTML = `<strong>${fmtInt(complete.length)} complete shared cases across all ${runIds.length} runs</strong><span>${fmtInt(filtered.length)} input cases match the filters; ${fmtInt(filtered.length - complete.length)} cases are excluded because at least one model/run or benchmark lacks a valid loss, price, positive P*, or eligible regression fit. First, each metric is averaged across five runs within a case, then across cases with equal weights. Revenue losses are averaged as supplied, not recomputed at the average price. Absolute price gaps are calculated before averaging. Positive signed gaps mean overpricing. Heuristic and Regression Heuristic are fixed benchmarks, counted once per case. All five methods use the same eligible cases; infeasible regression outputs remain excluded.</span>`;
+  document.querySelector("#allRunsLossChart").innerHTML = renderAcrossMeanChart(summaries, {width: 960});
+  document.querySelector("#allRunsPriceChart").innerHTML = renderAcrossMeanChart(summaries.map(item => ({...item, meanLoss: item.absoluteRelativeGap})), {width: 960, axisTitle: "Mean absolute relative price gap"});
+  document.querySelector("#allRunsSummary tbody").innerHTML = summaries.map(item => `<tr><th>${item.model}</th><td>${fmtInt(complete.length)}</td><td>${baselines.includes(item.model) ? "1 (fixed)" : runIds.length}</td><td>${fmtLoss(item.meanLoss)}</td><td>${fmtNum(item.signedGap)}</td><td>${fmtNum(item.absoluteGap)}</td><td>${fmtSignedLoss(item.signedRelativeGap)}</td><td>${fmtPct(item.absoluteRelativeGap)}</td></tr>`).join("");
+  document.querySelector("#allRunsRunTable tbody").innerHTML = methods.flatMap(model => (baselines.includes(model) ? ["fixed"] : runIds).map(run => {
+    const source = complete.map(entry => entry.methods[model][run]);
+    return `<tr><th>${model}</th><td>${run === "fixed" ? "Fixed benchmark" : run}</td><td>${fmtInt(source.length)}</td><td>${fmtLoss(mean(source.map(row => row.rel_rev_loss)))}</td><td>${fmtSignedLoss(mean(source.map(row => (row.ai_answer - row.p_star) / row.p_star)))}</td><td>${fmtPct(mean(source.map(row => Math.abs(row.ai_answer - row.p_star) / row.p_star)))}</td></tr>`;
+  })).join("");
 }
 
 function render() {
+  activateBenchmarkRows();
+  document.querySelector("#benchmarkControls").hidden = selectedTab === "tTestsRuns";
+  const advanced = selectedTab === "advancedModels";
+  document.querySelector("#benchmarkGroupControl").hidden = advanced;
+  const basicOverview = selectedTab === "overview";
+
+  document.querySelector("#benchmarkGroup").value = advanced ? "all" : basicOverview ? "basic" : selectedBenchmarkGroup;
+  document.querySelector("#benchmarkRun").value = String(selectedBenchmarkRun);
+  document.querySelector("#benchmarkGroup").disabled = advanced || basicOverview;
+  document.querySelector("#benchmarkRun").disabled = (!advanced && !basicOverview && selectedBenchmarkGroup === "advanced");
+  document.querySelector("#tabDescription").textContent = TAB_DESCRIPTIONS[selectedTab] || "";
   if (selectedTab === "overview") renderOverview();
   if (selectedTab === "across") renderAcross();
   if (selectedTab === "tests") renderTests();
   if (selectedTab === "tTestsAcross") renderAcrossTTests();
+  if (selectedTab === "tTestsRuns") renderRunTTests();
   if (selectedTab === "tTestsWithin") renderWithinTTests();
   if (selectedTab === "withinTests") renderWithinTests();
   if (selectedTab === "within") renderWithin();
   if (selectedTab === "groundTruth") renderGroundTruth();
-  if (selectedTab === "supplemental") renderSupplemental();
+  if (selectedTab === "advancedModels") renderOverview();
+
 }
 
+document.querySelector("#benchmarkGroup").addEventListener("change", event => {
+  selectedBenchmarkGroup = event.target.value;
+  applyBenchmarkSelection();
+});
+document.querySelector("#benchmarkRun").addEventListener("change", event => {
+  selectedBenchmarkRun = event.target.value === "all" ? "all" : Number(event.target.value);
+  applyBenchmarkSelection();
+});
+
 document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => {
+  if (selectedTab in overviewFiltersByTab) overviewFiltersByTab[selectedTab] = selectedOverviewFilters;
   selectedTab = button.dataset.tab;
+  if (selectedTab in overviewFiltersByTab) selectedOverviewFilters = overviewFiltersByTab[selectedTab];
   document.querySelectorAll(".tab, .panel").forEach(el => el.classList.remove("active"));
   button.classList.add("active");
   document.querySelector(`#${selectedTab}`).classList.add("active");
@@ -4404,10 +4751,6 @@ document.querySelector("#groundTruthCasePicker").addEventListener("change", even
   renderGroundTruth();
 });
 
-document.querySelector("#supplementalAdditiveGroup").addEventListener("change", event => {
-  selectedSupplementalAdditiveGroup = event.target.value;
-  renderSupplemental();
-});
 
 document.querySelector("#groupPicker").addEventListener("change", event => {
   selectedGroup = event.target.value;
@@ -4448,7 +4791,11 @@ document.addEventListener("click", event => {
     const available = availableTestFilterValues(field);
     const selected = selectedTestFilterValues(field, available);
     selectedTestFilters[field] = selected.length === available.length ? [] : [...available];
-    const renderer = resetButton.closest("#tTestsAcross") ? renderAcrossTTests : render;
+    const renderer = resetButton.closest("#tTestsAcross")
+      ? renderAcrossTTests
+      : resetButton.closest("#tTestsRuns")
+        ? renderRunTTests
+        : render;
     rerenderWithOpenDropdowns(renderer);
     return;
   }
@@ -4464,7 +4811,11 @@ document.addEventListener("change", event => {
   if (!host || !(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
   const field = host.dataset.testFilterList;
   selectedTestFilters[field] = [...host.querySelectorAll("input:checked")].map(input => input.value);
-  const renderer = host.closest("#tTestsAcross") ? renderAcrossTTests : render;
+  const renderer = host.closest("#tTestsAcross")
+    ? renderAcrossTTests
+    : host.closest("#tTestsRuns")
+      ? renderRunTTests
+      : render;
   rerenderWithOpenDropdowns(renderer);
 });
 
@@ -4481,15 +4832,19 @@ document.querySelector("#resetOverviewFilters").addEventListener("click", () => 
   renderOverview();
 });
 
+
 document.querySelector("#resetTestFilters").addEventListener("click", () => {
   selectedTestFilters = {};
   render();
 });
 
 document.addEventListener("click", event => {
-  if (!event.target.closest("#resetTTestAcrossFilters")) return;
+  const isAcross = event.target.closest("#resetTTestAcrossFilters");
+  const isRuns = event.target.closest("#resetTTestRunsFilters");
+  if (!isAcross && !isRuns) return;
   selectedTestFilters = {};
-  renderAcrossTTests();
+  if (isRuns) renderRunTTests();
+  else renderAcrossTTests();
 });
 
 document.querySelector("#tTestAcrossModelList").addEventListener("change", event => {
@@ -4522,6 +4877,55 @@ document.querySelector("#tTestAcrossLevelReset").addEventListener("click", () =>
   renderAcrossTTests();
 });
 
+document.querySelector("#runComparisonModel").addEventListener("change", event => {
+  selectedRunComparisonModel = event.target.value;
+  renderRunTTests();
+});
+
+document.querySelector("#runComparisonRunList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedRunComparisonRuns = [...document.querySelectorAll("#runComparisonRunList input:checked")]
+    .map(input => Number(input.value));
+  renderRunTTests();
+});
+
+document.querySelector("#runComparisonRunReset").addEventListener("click", () => {
+  selectedRunComparisonRuns = (payload.basic_runs || []).map(Number).filter(Number.isFinite);
+  renderRunTTests();
+});
+
+document.querySelector("#runComparisonField").addEventListener("change", event => {
+  selectedRunComparisonField = event.target.value;
+  selectedRunComparisonLevels = [];
+  renderRunTTests();
+});
+
+document.querySelector("#runComparisonLevelList").addEventListener("change", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
+  selectedRunComparisonLevels = [...document.querySelectorAll("#runComparisonLevelList input:checked")]
+    .map(input => input.value);
+  renderRunTTests();
+});
+
+document.querySelector("#runComparisonLevelReset").addEventListener("click", () => {
+  const source = payload.rows.filter(row =>
+    row.model === selectedRunComparisonModel && passesTestFilters(row)
+  );
+  selectedRunComparisonLevels = selectedRunComparisonField
+    ? sortLevelValues([...new Set(source.map(row => levelValue(row[selectedRunComparisonField])))])
+    : [];
+  renderRunTTests();
+});
+
+["tTestAcrossLevelsDetails", "runComparisonLevelsDetails"].forEach(id => {
+  document.querySelector(`#${id}`).addEventListener("toggle", event => {
+    if (event.target.open) {
+      if (id === "runComparisonLevelsDetails") renderRunTTests();
+      else renderAcrossTTests();
+    }
+  });
+});
+
 document.querySelector("#tTestWithinModelList").addEventListener("change", event => {
   if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") return;
   selectedTTestWithinModels = [...document.querySelectorAll("#tTestWithinModelList input:checked")]
@@ -4530,7 +4934,7 @@ document.querySelector("#tTestWithinModelList").addEventListener("change", event
 });
 
 document.querySelector("#tTestWithinModelReset").addEventListener("click", () => {
-  selectedTTestWithinModels = availableTTestMethods();
+  selectedTTestWithinModels = comparisonMethods();
   renderWithinTTests();
 });
 
@@ -4687,10 +5091,7 @@ async function loadPayload() {
 loadPayload()
   .then(data => {
     payload = data;
-    rows = payload.rows || [];
-    models = payload.models || [...new Set(rows.map(row => row.model))];
-    rebuildDerivedIndexes();
-    render();
+    applyBenchmarkSelection();
   })
   .catch(error => {
     const isFileProtocol = window.location.protocol === "file:";

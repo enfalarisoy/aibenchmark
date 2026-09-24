@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=20260918a">
+  <link rel="stylesheet" href="styles.css?v=7.1">
 </head>
 <body>
   <header class="topbar">
@@ -25,12 +25,32 @@
       <button class="tab active" data-tab="tests">Tests (Across Models)</button>
       <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
       <button class="tab" data-tab="tTestsAcross">T Tests (Across Models)</button>
+      <button class="tab" data-tab="tTestsRuns">T Tests (Across Runs)</button>
       <button class="tab" data-tab="tTestsWithin">T Tests (Within Models)</button>
       <button class="tab" data-tab="groundTruth">Ground Truth Curves</button>
-      <button class="tab" data-tab="supplemental">Supplemental Experiments</button>
+      <button class="tab" data-tab="advancedModels">Advanced Models</button>
     </nav>
+    <p id="tabDescription" class="tab-description"></p>
+
+    <div class="toolbar card" id="benchmarkControls" aria-label="Benchmark data selection">
+      <label id="benchmarkGroupControl">Models in main analysis
+        <select id="benchmarkGroup">
+          <option value="all">Basic + advanced (shared cases)</option>
+          <option value="basic">Basic models (full dataset)</option>
+          <option value="advanced">Advanced models (subset)</option>
+        </select>
+      </label>
+      <label>Basic model run
+        <select id="benchmarkRun">
+          <option value="1">Run 1</option><option value="2">Run 2</option>
+          <option value="3">Run 3</option><option value="4">Run 4</option><option value="5">Run 5</option>
+          <option value="all">All 5 runs (averaged)</option>
+        </select>
+      </label>
+    </div>
 
     <section id="overview" class="panel">
+      <div id="overviewContent">
       <div class="toolbar card" aria-label="Overview filters">
         <div class="overview-filter-header">
           <div>
@@ -211,7 +231,7 @@
       <article class="card chart-card">
         <div class="card-heading">
           <h2>Static mean revenue loss across methods</h2>
-          <span>Shared static cases for GPT, Gemini, Claude, Heuristic, and Regression Heuristic</span>
+          <span>Shared static cases for the selected models, Heuristic, and Regression Heuristic</span>
         </div>
         <div id="overviewStaticLeaderboardChart" class="pair-mean-grid"></div>
       </article>
@@ -324,6 +344,14 @@
         </div>
       </article>
       </div>
+      </div>
+      <div id="averagedRunDetails" hidden>
+      <article id="allRunsNote" class="comparison-note card"></article>
+      <article class="card chart-card"><div class="card-heading"><h2>Mean relative revenue loss across five runs</h2><span>Each complete shared case has equal weight</span></div><div id="allRunsLossChart" class="table-wrap"></div></article>
+      <article class="card chart-card"><div class="card-heading"><h2>Mean absolute relative price gap across five runs</h2><span>Mean |P − P*| / P*: lower is closer to optimal price</span></div><div id="allRunsPriceChart" class="table-wrap"></div></article>
+      <article class="card table-card"><div class="card-heading"><h2>Basic model averages and benchmarks</h2><span>Signed gaps show direction; absolute gaps measure distance</span></div><div class="table-wrap"><table id="allRunsSummary"><thead><tr><th>Model</th><th>Shared cases</th><th>Runs per case</th><th>Mean revenue loss</th><th>Mean signed price gap (P − P*)</th><th>Mean absolute price gap |P − P*|</th><th>Mean signed relative price gap</th><th>Mean absolute relative price gap</th></tr></thead><tbody></tbody></table></div></article>
+      <article class="card table-card"><div class="card-heading"><h2>Per-run results and fixed benchmarks</h2><span>Same complete cases; each fixed benchmark appears once</span></div><div class="table-wrap"><table id="allRunsRunTable"><thead><tr><th>Model</th><th>Run</th><th>Shared cases</th><th>Mean revenue loss</th><th>Mean signed relative price gap</th><th>Mean absolute relative price gap</th></tr></thead><tbody></tbody></table></div></article>
+      </div>
     </section>
 
     <section id="across" class="panel" hidden>
@@ -370,7 +398,7 @@
       <article class="card chart-card">
         <div class="card-heading">
           <h2>Distribution of relative revenue loss</h2>
-          <span>Single plot across all three models</span>
+          <span>Single plot across the selected models</span>
         </div>
         <div id="lossHistogram" class="histogram"></div>
       </article>
@@ -755,7 +783,7 @@
       <article class="card chart-card">
         <div class="card-heading">
           <h2>Density of paired differences</h2>
-          <span>Gemini comparisons only; displayed from -10% to +10%; negative favors Gemini</span>
+          <span>First listed model versus the others; displayed from -10% to +10%; negative favors the first model</span>
         </div>
         <div id="diffDensity" class="density-plot"></div>
       </article>
@@ -876,11 +904,11 @@
         </div>
       </article>
 
-      <article class="card table-card">
-        <div class="card-heading">
-          <h2>Pairwise t tests by level</h2>
-          <span>Mean differences are first method minus second method</span>
-        </div>
+      <details class="card table-card deferred-results" id="tTestAcrossLevelsDetails">
+        <summary class="card-heading">
+          <span><strong>Pairwise t tests by level</strong><small>Open to calculate detailed split-level results</small></span>
+          <span>Mean differences are first model minus second model</span>
+        </summary>
         <div class="table-wrap compact-table">
           <table id="tTestAcrossByLevelTable">
             <thead>
@@ -896,7 +924,66 @@
             <tbody></tbody>
           </table>
         </div>
-      </article>
+      </details>
+
+    </section>
+
+    <section id="tTestsRuns" class="panel" aria-labelledby="runComparisonHeading">
+      <div id="tTestRunsFilterPanel" class="toolbar card test-selection-toolbar" aria-label="Across-runs t test case selection"></div>
+      <section class="run-comparison-section">
+        <div class="toolbar card" aria-label="Basic model run comparison controls">
+          <label>AI model to compare
+            <select id="runComparisonModel"></select>
+          </label>
+          <fieldset class="checkbox-filter">
+            <legend>Runs</legend>
+            <div class="checkbox-filter-top">
+              <span class="checkbox-filter-summary" id="runComparisonRunSummary">Select 2 or more runs</span>
+              <button id="runComparisonRunReset" class="mini-button" type="button">Select all</button>
+            </div>
+            <div class="checkbox-list" id="runComparisonRunList"></div>
+          </fieldset>
+          <label>Split t tests by
+            <select id="runComparisonField"></select>
+          </label>
+          <fieldset class="checkbox-filter within-level-filter">
+            <legend>Included split levels</legend>
+            <div class="checkbox-filter-top">
+              <span class="checkbox-filter-summary" id="runComparisonLevelSummary">Select 1 or more levels</span>
+              <button id="runComparisonLevelReset" class="mini-button" type="button">Select all</button>
+            </div>
+            <div class="checkbox-list" id="runComparisonLevelList"></div>
+          </fieldset>
+        </div>
+
+        <article class="comparison-note card" id="runComparisonNote"></article>
+
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2 id="runComparisonHeading">Basic model run comparisons</h2>
+            <span>Paired tests of relative revenue loss for the same input case</span>
+          </div>
+          <div class="table-wrap">
+            <table id="runComparisonOverallTable">
+              <thead><tr><th>Comparison</th><th>N</th><th>Mean diff</th><th>T p-value</th><th>Bootstrap 95% CI</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <details class="card table-card deferred-results" id="runComparisonLevelsDetails">
+          <summary class="card-heading">
+            <span><strong>Run comparisons by level</strong><small>Open to calculate detailed split-level results</small></span>
+            <span>Uses the split variable and included levels selected above</span>
+          </summary>
+          <div class="table-wrap compact-table">
+            <table id="runComparisonByLevelTable">
+              <thead><tr><th>Level</th><th>Comparison</th><th>N</th><th>Mean diff</th><th>T p-value</th><th>Bootstrap 95% CI</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
     </section>
 
     <section id="tTestsWithin" class="panel">
@@ -997,50 +1084,16 @@
       </article>
     </section>
 
-    <section id="supplemental" class="panel">
-      <article class="comparison-note card" id="supplementalNote"></article>
+    <section id="advancedModels" class="panel">
+      <div id="advancedOverviewSlot"></div>
+      <article class="comparison-note card" id="advancedModelsNote"></article>
       <article class="card table-card">
-        <div class="card-heading">
-          <h2>Supplemental experiment results</h2>
-          <span>Each experiment is reported separately and does not alter the core benchmark leaderboard</span>
-        </div>
-        <div class="table-wrap">
-          <table id="supplementalTable">
-            <thead><tr><th>Experiment</th><th>Cases</th><th>Mean loss</th><th>Near-optimal</th><th>Severe loss</th><th>Under / similar / over</th><th>Matched reference</th><th>Experiment − reference</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </article>
-      <article class="card table-card">
-        <div class="card-heading">
-          <h2>Matched comparison with original benchmark methods</h2>
-          <span>Every row uses only cases available in both the supplemental experiment and the original method</span>
-        </div>
-        <div class="table-wrap">
-          <table id="supplementalMatchedTable">
-            <thead><tr><th>Experiment</th><th>Original method</th><th>Matched cases</th><th>Supplemental mean loss</th><th>Original mean loss</th><th>Experiment − original</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </article>
-      <article class="card chart-card">
-        <div class="card-heading">
-          <h2>Claude Fable 5.1: matched mean loss</h2>
-          <span>Fable and all original methods on the same successful static subset</span>
-        </div>
-        <div id="supplementalFableChart" class="pair-mean-grid"></div>
-      </article>
-      <article class="card chart-card">
-        <div class="card-heading">
-          <h2>Additive versus multiplicative noise: GPT-5 mini</h2>
-          <span id="supplementalAdditiveNote">Matched static cases only</span>
-        </div>
-        <label>Compare within matched cases by
-          <select id="supplementalAdditiveGroup"></select>
-        </label>
-        <div id="supplementalAdditiveChart" class="table-wrap"></div>
+        <div class="card-heading"><h2>All shared cases</h2><span>Each model cell shows its recommended price and relative revenue loss. Expand a case to see its matching inputs.</span></div>
+        <div class="table-wrap"><table id="advancedModelsCases"><thead></thead><tbody></tbody></table></div>
       </article>
     </section>
+
+
 
     <section id="within" class="panel" hidden>
       <div class="toolbar card" aria-label="Within-model controls">
@@ -1056,8 +1109,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>6.1</div>
+    <div>7.1</div>
   </footer>
-  <script src="app.js?v=20260920g"></script>
+  <script src="app.js?v=7.1"></script>
 </body>
 </html>

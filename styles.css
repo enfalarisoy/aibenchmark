@@ -107,8 +107,21 @@ code {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 14px 0 16px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: 0 0 8px;
+  padding: 10px 0 6px;
+  background: rgba(246, 248, 250, 0.96);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
+}
+
+.tab-description {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .tab {
@@ -143,6 +156,31 @@ code {
   gap: 12px;
   align-items: end;
   padding: 14px;
+}
+
+#benchmarkControls[hidden] {
+  display: none;
+}
+
+.deferred-results > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.deferred-results > summary::-webkit-details-marker {
+  display: none;
+}
+
+.deferred-results > summary small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.deferred-results[open] > summary small {
+  display: none;
 }
 
 .overview-filter-header,
@@ -671,6 +709,12 @@ input[type="search"]::placeholder {
 .model-regression { background: var(--regression); }
 .model-tie,
 .model-fallback { background: var(--tie); }
+.model-astra { background: #287b83; }
+.model-pro { background: #9a6229; }
+svg .model-astra { fill: #287b83; }
+svg .model-pro { fill: #9a6229; }
+.density-line.model-astra, .density-legend.model-astra { stroke: #287b83; }
+.density-line.model-pro, .density-legend.model-pro { stroke: #9a6229; }
 .bar-fill.pair-one { background: #5b5fc7; }
 .bar-fill.pair-two { background: #c2417b; }
 .bar-fill.pair-three { background: #0f8b8d; }
@@ -825,7 +869,7 @@ svg .model-fallback { fill: var(--tie); }
 }
 
 .distribution-mean-panel {
-  overflow: hidden;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: #fbfcfd;

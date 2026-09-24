@@ -1787,7 +1787,8 @@ function activateBenchmarkRows() {
     ? [...averagedBasicRows(), ...payload.rows.filter(row => groups[row.model] === "advanced")]
     : payload.rows;
   rows = source.filter(row => models.includes(row.model)
-    && (groups[row.model] === "advanced" || row.run_id === selectedBenchmarkRun));
+    && (groups[row.model] === "advanced" || row.run_id === selectedBenchmarkRun)
+    && !row.analysis_excluded);
   ACROSS_CHART_ORDER = [...models, HEURISTIC_LABEL];
   rebuildDerivedIndexes();
 }
@@ -1805,11 +1806,13 @@ function applyBenchmarkSelection() {
   selectedTTestLevels = [];
   selectedTTestWithinLevels = [];
   const shared = comparableCases(() => true).length;
+  const excludedCases = payload.analysis_exclusion_policy?.excluded_case_count || 0;
   document.querySelector("#benchmarkRun").disabled = selectedBenchmarkGroup === "advanced";
   benchmarkSelectionDescription =
     `09-24 data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
     + (selectedBenchmarkGroup === "advanced" ? "" : `Basic models use ${basicRunDescription()}. `)
     + (selectedBenchmarkGroup === "basic" ? "" : "Advanced models use their single supplied run on 96 cases per scenario. ")
+    + (excludedCases ? `${fmtInt(excludedCases)} duopoly cases with negative raw ground-truth demand are retained in data but excluded from analyses. ` : "")
     + "Across-model results use shared cases; within-model results use each model's available cases. Runs are not pooled. Changing these controls resets filters.";
   render();
 }

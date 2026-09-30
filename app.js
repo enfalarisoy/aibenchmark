@@ -1,7 +1,7 @@
 let payload = { rows: [], models: [] };
 let rows = [];
 let models = [];
-let selectedBenchmarkGroup = "all";
+let selectedBenchmarkGroup = "basic";
 let selectedBenchmarkRun = 1;
 let benchmarkSelectionDescription = "";
 let rowsByModel = new Map();
@@ -307,6 +307,10 @@ function regressionLoss(caseRows) {
   return regression?.fit_status !== "infeasible" && Number.isFinite(regression?.revenue_pct_gap)
     ? Math.abs(regression.revenue_pct_gap)
     : NaN;
+}
+
+function caseSetHasRegression(cases) {
+  return cases.some(caseRows => Number.isFinite(regressionLoss(caseRows)));
 }
 
 function regressionIsEligible(item) {
@@ -1269,11 +1273,7 @@ function populateWithinTestControls() {
 }
 
 function hasRegressionForCurrentTestFilters() {
-  const scenarios = selectedTestFilterValues(
-    "scenario_subtype",
-    availableTestFilterValues("scenario_subtype")
-  );
-  return hasRegressionForScenarios(scenarios);
+  return caseSetHasRegression(completeCases(comparableCases(passesTestFilters)));
 }
 
 function availableTTestMethods(includeRegression = true) {
@@ -1778,7 +1778,7 @@ function basicRunDescription() {
 function activateBenchmarkRows() {
   const groups = payload.model_groups || {};
   const group = selectedTab === "overview" ? "basic"
-    : selectedTab === "advancedModels" ? "all" : selectedBenchmarkGroup;
+    : selectedTab === "advancedModels" ? "advanced" : selectedBenchmarkGroup;
   const signature = `${group}|${selectedBenchmarkRun}`;
   if (signature === activeBenchmarkSignature) return;
   activeBenchmarkSignature = signature;
@@ -1807,7 +1807,7 @@ function applyBenchmarkSelection() {
   const shared = comparableCases(() => true).length;
   document.querySelector("#benchmarkRun").disabled = selectedBenchmarkGroup === "advanced";
   benchmarkSelectionDescription =
-    `09-24 data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
+    `9-30 data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
     + (selectedBenchmarkGroup === "advanced" ? "" : `Basic models use ${basicRunDescription()}. `)
     + (selectedBenchmarkGroup === "basic" ? "" : "Advanced models use their single supplied run on 96 cases per scenario. ")
     + "Revenue loss values above 100% are capped at 100% in analysis. "
@@ -2630,7 +2630,7 @@ function renderTests() {
   populateTestFilterControls();
   const cases = comparableCases(passesTestFilters);
   const completed = completeCases(cases);
-  const showRegression = hasRegressionForCurrentTestFilters();
+  const showRegression = caseSetHasRegression(completed);
   const benchmarkCases = completed.filter(caseRows =>
     Number.isFinite(heuristicLoss(caseRows))
     && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
@@ -3572,7 +3572,7 @@ function renderOverview() {
     "scenario_subtype",
     availableOverviewFilterValues("scenario_subtype")
   );
-  const showRegression = hasRegressionForScenarios(overviewScenarioValues);
+  const showRegression = caseSetHasRegression(completed);
   const baseOverviewMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
   const overviewMethods = showRegression ? [...baseOverviewMethods, REGRESSION_LABEL] : baseOverviewMethods;
   const benchmarkCompleted = completed.filter(caseRows =>
@@ -3580,7 +3580,7 @@ function renderOverview() {
     && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
   );
   const regressionItems = regressionResultsForOverview();
-  const regressionTotal = [...regressionResultsById.values()].filter(item => item.scenario_subtype === "static").length;
+  const regressionTotal = new Set(rows.filter(row => row.scenario_subtype === "static" && regressionForRow(row)).map(regressionKey)).size;
   const eligibleRegressionItems = regressionItems.filter(regressionIsEligible);
   const infeasibleRegressionItems = regressionItems.filter(item => !regressionIsEligible(item));
   const overviewSimilarPricingTableBody = document.querySelector("#overviewSimilarPricingTable tbody");
@@ -3777,15 +3777,13 @@ function renderOverview() {
       : `<tr><td colspan="5" class="quiet">No over-pricing leaderboard is available for the current filters.</td></tr>`;
   }
 
-  const staticMethods = overviewMethods.includes(REGRESSION_LABEL)
-    ? overviewMethods
-    : [...overviewMethods, REGRESSION_LABEL];
+  const staticMethods = overviewMethods;
   const staticBenchmarkCompleted = benchmarkCompleted.filter(caseRows =>
     levelValue(overviewMethods
       .filter(method => method !== HEURISTIC_LABEL)
       .map(method => caseRows[method])
       .find(Boolean)?.scenario_subtype) === "static"
-    && Number.isFinite(regressionLoss(caseRows))
+    && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
   );
   const staticPointCounts = new Map(staticMethods.map(model => [model, 0]));
   staticBenchmarkCompleted.forEach(caseRows => {
@@ -3825,6 +3823,9 @@ function renderOverview() {
     overviewStaticNoteEl.innerHTML = staticBenchmarkCompleted.length
       ? `<strong>${fmtInt(staticBenchmarkCompleted.length)} filtered static benchmark cases with regression output</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This section keeps only the <strong>static</strong> cases from the current overview filter set and compares the selected AI models, <strong>Heuristic</strong>, and <strong>Regression Heuristic</strong> on the same case set. Regression Heuristic uses the absolute <strong>revenue gap</strong> from <strong>Revenue_hat</strong> to <strong>Revenue_star</strong> as its loss measure.</span>`
       : `<strong>No static benchmark cases with regression output for the current filters</strong><span>Try including <strong>static</strong> in the scenario filter or relaxing the current overview filters.</span>`;
+    if (!showRegression && staticBenchmarkCompleted.length) {
+      overviewStaticNoteEl.innerHTML = `<strong>${fmtInt(staticBenchmarkCompleted.length)} complete static cases</strong><span>Comparing the selected AI models and Heuristic. Regression Heuristic has no matching output for this benchmark selection. Its existing diagnostics are shown separately below; updated regression results for the current noise levels are needed for a paired comparison.</span>`;
+    }
   }
 
   if (overviewStaticModelTableBody) {
@@ -3859,6 +3860,9 @@ function renderOverview() {
     regressionNoteEl.innerHTML = regressionItems.length
       ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum.${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
       : `<strong>No static regression diagnostics for the current filters</strong><span>Regression diagnostics are only available for the <strong>static</strong> instances. Try including static in the scenario filter or relaxing the current overview filters.</span>`;
+    if (!showRegression) {
+      regressionNoteEl.innerHTML = `<strong>${fmtInt(regressionItems.length)} static regression instances match the filters</strong><span>No eligible shared regression comparison is available for this selection. Matching requires the same scenario and instance ID, including noise level. Non-positive fitted prices remain excluded from averages and rankings.</span>`;
+    }
   }
 
   if (regressionKpisEl) {
@@ -4626,10 +4630,10 @@ function renderGroundTruth() {
 
 
 function renderAdvancedCaseTable(cases, completed) {
-  const aiMethods = payload.models;
+  const aiMethods = models;
   const methods = [...aiMethods, HEURISTIC_LABEL, REGRESSION_LABEL];
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
-  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The full overview above compares the six AI models, Heuristic, and eligible Regression Heuristic results. Regression eligibility can reduce the leaderboard case count. All six AI recommendations are shown below, including incomplete answers. Basic models use ${basicRunDescription()}; advanced models use their single supplied run.</span>`;
+  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The overview compares the ${aiMethods.length} selected AI models, Heuristic, and eligible Regression Heuristic results. Regression eligibility can reduce the leaderboard case count. Recommendations below include incomplete answers. Advanced models use their single supplied run; the newer basic-model noise grid has no shared cases with this subset.</span>`;
   document.querySelector("#advancedModelsCases thead").innerHTML = `<tr><th>Case / matching inputs</th><th>Scenario</th><th>Demand model</th><th>P*</th>${methods.map(model => `<th>${escape(model)}<br><span class="quiet">Price / loss</span></th>`).join("")}</tr>`;
   document.querySelector("#advancedModelsCases tbody").innerHTML = cases.map(entry => {
     const row = entry[methods[0]];
@@ -4710,7 +4714,7 @@ function render() {
   document.querySelector("#benchmarkGroupControl").hidden = advanced;
   const basicOverview = selectedTab === "overview";
 
-  document.querySelector("#benchmarkGroup").value = advanced ? "all" : basicOverview ? "basic" : selectedBenchmarkGroup;
+  document.querySelector("#benchmarkGroup").value = advanced ? "advanced" : basicOverview ? "basic" : selectedBenchmarkGroup;
   document.querySelector("#benchmarkRun").value = String(selectedBenchmarkRun);
   document.querySelector("#benchmarkGroup").disabled = advanced || basicOverview;
   document.querySelector("#benchmarkRun").disabled = (!advanced && !basicOverview && selectedBenchmarkGroup === "advanced");

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=8.3">
+  <link rel="stylesheet" href="styles.css?v=8.3.2">
 </head>
 <body>
   <header class="topbar">
@@ -35,7 +35,6 @@
     <div class="toolbar card" id="benchmarkControls" aria-label="Benchmark data selection">
       <label id="benchmarkGroupControl">Models in main analysis
         <select id="benchmarkGroup">
-          <option value="all">Basic + advanced (shared cases)</option>
           <option value="basic">Basic models (full dataset)</option>
           <option value="advanced">Advanced models (subset)</option>
         </select>
@@ -208,7 +207,7 @@
       <article class="card table-card">
         <div class="card-heading">
           <h2>Static across-method performance</h2>
-          <span>Filtered static benchmark cases only, including regression</span>
+          <span>Filtered static benchmark cases; regression included when matching output is available</span>
         </div>
         <div class="table-wrap">
           <table id="overviewStaticModelTable">
@@ -231,7 +230,7 @@
       <article class="card chart-card">
         <div class="card-heading">
           <h2>Static mean revenue loss across methods</h2>
-          <span>Shared static cases for the selected models, Heuristic, and Regression Heuristic</span>
+          <span>Shared static cases for the selected methods</span>
         </div>
         <div id="overviewStaticLeaderboardChart" class="pair-mean-grid"></div>
       </article>
@@ -1109,8 +1108,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>8.3</div>
+    <div>8.3.2</div>
   </footer>
-  <script src="app.js?v=8.3"></script>
+  <script src="app.js?v=8.3.2-regression-0930"></script>
 </body>
 </html>

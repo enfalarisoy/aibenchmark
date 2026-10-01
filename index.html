@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=8.3.2">
+  <link rel="stylesheet" href="styles.css?v=8.5">
 </head>
 <body>
   <header class="topbar">
@@ -76,6 +76,7 @@
                 <th>Case points</th>
                 <th>Point share</th>
                 <th>Mean loss across cases</th>
+                <th>Median loss across cases</th>
                 <th>Compared cases</th>
               </tr>
             </thead>
@@ -90,6 +91,14 @@
           <span>All complete benchmark cases together</span>
         </div>
         <div id="overviewLeaderboardChart" class="pair-mean-grid"></div>
+      </article>
+
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Median revenue loss across cases</h2>
+          <span>Same cases as the mean chart; the median is less sensitive to a few large failures</span>
+        </div>
+        <div id="overviewMedianChart" class="pair-mean-grid"></div>
       </article>
 
       <div class="grid two">
@@ -216,6 +225,7 @@
                 <th>Rank</th>
                 <th>Model</th>
                 <th>Mean loss</th>
+                <th>Median loss</th>
                 <th>Near-optimal</th>
                 <th>Severe-loss</th>
                 <th>Case points</th>
@@ -348,8 +358,8 @@
       <article id="allRunsNote" class="comparison-note card"></article>
       <article class="card chart-card"><div class="card-heading"><h2>Mean relative revenue loss across five runs</h2><span>Each complete shared case has equal weight</span></div><div id="allRunsLossChart" class="table-wrap"></div></article>
       <article class="card chart-card"><div class="card-heading"><h2>Mean absolute relative price gap across five runs</h2><span>Mean |P − P*| / P*: lower is closer to optimal price</span></div><div id="allRunsPriceChart" class="table-wrap"></div></article>
-      <article class="card table-card"><div class="card-heading"><h2>Basic model averages and benchmarks</h2><span>Signed gaps show direction; absolute gaps measure distance</span></div><div class="table-wrap"><table id="allRunsSummary"><thead><tr><th>Model</th><th>Shared cases</th><th>Runs per case</th><th>Mean revenue loss</th><th>Mean signed price gap (P − P*)</th><th>Mean absolute price gap |P − P*|</th><th>Mean signed relative price gap</th><th>Mean absolute relative price gap</th></tr></thead><tbody></tbody></table></div></article>
-      <article class="card table-card"><div class="card-heading"><h2>Per-run results and fixed benchmarks</h2><span>Same complete cases; each fixed benchmark appears once</span></div><div class="table-wrap"><table id="allRunsRunTable"><thead><tr><th>Model</th><th>Run</th><th>Shared cases</th><th>Mean revenue loss</th><th>Mean signed relative price gap</th><th>Mean absolute relative price gap</th></tr></thead><tbody></tbody></table></div></article>
+      <article class="card table-card"><div class="card-heading"><h2>Basic model averages and benchmarks</h2><span>Signed gaps show direction; absolute gaps measure distance</span></div><div class="table-wrap"><table id="allRunsSummary"><thead><tr><th>Model</th><th>Shared cases</th><th>Runs per case</th><th>Mean revenue loss</th><th>Median revenue loss</th><th>Mean signed price gap (P − P*)</th><th>Mean absolute price gap |P − P*|</th><th>Mean signed relative price gap</th><th>Mean absolute relative price gap</th></tr></thead><tbody></tbody></table></div></article>
+      <article class="card table-card"><div class="card-heading"><h2>Per-run results and fixed benchmarks</h2><span>Same complete cases; each fixed benchmark appears once</span></div><div class="table-wrap"><table id="allRunsRunTable"><thead><tr><th>Model</th><th>Run</th><th>Shared cases</th><th>Mean revenue loss</th><th>Median revenue loss</th><th>Mean signed relative price gap</th><th>Mean absolute relative price gap</th></tr></thead><tbody></tbody></table></div></article>
       </div>
     </section>
 
@@ -649,6 +659,7 @@
                   <th>Method</th>
                   <th>N</th>
                   <th>Mean</th>
+                  <th>Median</th>
                   <th>Near-optimal</th>
                   <th>Severe-loss</th>
                 </tr>
@@ -1107,9 +1118,9 @@
   </main>
 
   <footer>
-    <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>8.3.2</div>
+    <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Regression fits with a non-positive fitted price count as 100% revenue loss. AI rows without a valid answer are excluded from matched comparisons. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
+    <div>8.5</div>
   </footer>
-  <script src="app.js?v=8.3.2-regression-0930"></script>
+  <script src="app.js?v=8.5"></script>
 </body>
 </html>

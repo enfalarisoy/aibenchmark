@@ -180,6 +180,10 @@ const fmtSignedLoss = value => {
 const sigClass = pValue => Number.isFinite(pValue) && pValue < 0.05 ? "significant-cell" : "";
 const mean = values => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : NaN;
 const meanFinite = values => mean(values.filter(Number.isFinite));
+// Version 8.6: a row "has a loss" if it has a valid answer or a failed answer scored as 100% loss.
+// Only rows with a valid answer have a usable price; JS treats null as 0, so prices go through usablePrice().
+const hasLoss = row => Boolean(row && (row.answered || row.answer_failed) && Number.isFinite(row.rel_rev_loss));
+const usablePrice = row => (row?.answered && Number.isFinite(row.ai_answer) ? row.ai_answer : NaN);
 const medianFinite = values => median(values.filter(Number.isFinite));
 const shareWhere = (values, predicate) => {
   const finite = values.filter(Number.isFinite);
@@ -1771,13 +1775,16 @@ function averagedBasicRows() {
   averagedBasicRowsCache = [...byModelCase.values()].map(runs => {
     const source = [...runs.values()][0];
     const runRows = payload.basic_runs.map(run => runs.get(run));
-    const answered = runRows.every(row => row?.answered
-      && Number.isFinite(row.ai_answer) && Number.isFinite(row.rel_rev_loss)
-      && Number.isFinite(row.p_star) && row.p_star > 0);
+    const validInputs = runRows.every(row => row && Number.isFinite(row.p_star) && row.p_star > 0);
+    const scored = validInputs && runRows.every(hasLoss);
+    const answered = scored && runRows.every(row => Number.isFinite(usablePrice(row)));
     // One observation per input case, never five independent t-test observations.
+    // A failed run enters the case's mean loss as 100%; the averaged price needs all five prices.
     return {...source, run_id: "all", averaged_run_count: runRows.length, answered,
+      answer_failed: scored && !answered,
+      failed_run_count: runRows.filter(row => row?.answer_failed).length,
       ai_answer: answered ? mean(runRows.map(row => row.ai_answer)) : null,
-      rel_rev_loss: answered ? mean(runRows.map(row => row.rel_rev_loss)) : null};
+      rel_rev_loss: scored ? mean(runRows.map(row => row.rel_rev_loss)) : null};
   });
   return averagedBasicRowsCache;
 }
@@ -1831,7 +1838,7 @@ function rebuildDerivedIndexes() {
     models.map(model => [model, rows.filter(row => row.model === model)])
   );
   answeredRowsByModel = new Map(
-    models.map(model => [model, rows.filter(row => row.model === model && row.answered)])
+    models.map(model => [model, rows.filter(row => row.model === model && hasLoss(row))])
   );
   regressionResultsById = new Map(Object.entries(payload.regression_results || {}));
   groundTruthByKey = new Map(Object.entries(payload.ground_truth_instances || {}));
@@ -2063,7 +2070,11 @@ function comparableCases(filterFn = passesFilters) {
 }
 
 function completeCases(cases) {
-  return cases.filter(caseRows => models.every(model => caseRows[model].answered));
+  return cases.filter(caseRows => models.every(model => hasLoss(caseRows[model])));
+}
+
+function failedAnswerCount(cases) {
+  return cases.reduce((count, caseRows) => count + models.filter(model => caseRows[model]?.answer_failed).length, 0);
 }
 
 function modelLosses(cases, model) {
@@ -2658,7 +2669,7 @@ function renderTests() {
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
   document.querySelector("#sourceCount").textContent = fmtInt(rows.length);
   document.querySelector("#testsNote").innerHTML =
-    `<strong>${fmtInt(comparisonCases.length)} complete matched cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}.${showRegression ? ` Regression Heuristic is included for the ${fmtInt(benchmarkCases.length)} cases with an eligible regression output.` : ` Heuristic mean loss uses ${fmtInt(benchmarkCases.length)} of those same cases with a valid heuristic benchmark.`} Mean differences are first method minus second method; negative values favor the first method.</span>`;
+    `<strong>${fmtInt(comparisonCases.length)} complete matched cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}.${showRegression ? ` Regression Heuristic is included for the ${fmtInt(benchmarkCases.length)} cases with an eligible regression output.` : ` Heuristic mean loss uses ${fmtInt(benchmarkCases.length)} of those same cases with a valid heuristic benchmark.`} Mean differences are first method minus second method; negative values favor the first method.${failedAnswerCount(comparisonCases) ? ` <strong>${fmtInt(failedAnswerCount(comparisonCases))} AI answers without a valid price count as 100% revenue loss</strong> and are left out of pricing-direction counts.` : ""}</span>`;
 
   renderDensityPlot(comparisonCases);
   renderCdfPlot(comparisonCases);
@@ -3077,7 +3088,7 @@ function basicRunComparisonCases(model, runA, runB) {
   const byRunAndCase = new Map();
   payload.rows.forEach(row => {
     if (row.model !== model || ![runA, runB].includes(Number(row.run_id))) return;
-    if (!passesTestFilters(row) || !row.answered || !Number.isFinite(row.rel_rev_loss)) return;
+    if (!passesTestFilters(row) || !hasLoss(row)) return;
     const entry = byRunAndCase.get(row.case_key) || { reference: row };
     entry[Number(row.run_id)] = row;
     byRunAndCase.set(row.case_key, entry);
@@ -3654,8 +3665,8 @@ function renderOverview() {
         || a.model.localeCompare(b.model)
     );
   document.querySelector("#overviewNote").innerHTML = advancedOnly
-    ? `<strong>${fmtInt(benchmarkCompleted.length)} complete paired advanced-model cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This tab compares only <strong>${models.map(model => modelMeta(model).short).join(", ")}</strong>. Basic models, Heuristic, and Regression Heuristic are not included because they do not share this noise structure. The case leaderboard awards <strong>1 shared point per case</strong>, split evenly across ties.</span>`
-    : `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression Heuristic</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression Heuristic is included for eligible fits in the selected scenarios." : ""}</span>`;
+    ? `<strong>${fmtInt(benchmarkCompleted.length)} complete paired advanced-model cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This tab compares only <strong>${models.map(model => modelMeta(model).short).join(", ")}</strong>. Basic models, Heuristic, and Regression Heuristic are not included because they do not share this noise structure. The case leaderboard awards <strong>1 shared point per case</strong>, split evenly across ties.${failedAnswerCount(benchmarkCompleted) ? ` <strong>${fmtInt(failedAnswerCount(benchmarkCompleted))} AI answers without a valid price count as 100% revenue loss</strong> and are left out of pricing-direction counts.` : ""}</span>`
+    : `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression Heuristic</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression Heuristic is included for eligible fits in the selected scenarios." : ""}${failedAnswerCount(benchmarkCompleted) ? ` <strong>${fmtInt(failedAnswerCount(benchmarkCompleted))} AI answers without a valid price count as 100% revenue loss</strong> and are left out of pricing-direction counts.` : ""}</span>`;
 
   document.querySelector("#overviewCaseLeaderboardTable tbody").innerHTML = rankedCaseLeaderboard.length
     ? rankedCaseLeaderboard.map((item, index) => `
@@ -4472,7 +4483,7 @@ function withinGroupSummaries(model) {
 
   const summaries = [...groups.entries()].map(([level, groupRows]) => {
     const answeredRows = groupRows.filter(row => row.answered);
-    const losses = answeredRows.map(row => row.rel_rev_loss).filter(Number.isFinite);
+    const losses = groupRows.filter(hasLoss).map(row => row.rel_rev_loss);
     return {
       level,
       rows: groupRows.length,
@@ -4518,7 +4529,7 @@ function renderWithinModelPanel(model) {
         <span class="model-dot ${meta.colorClass}"></span>
         <div>
           <h2>${model}</h2>
-          <p>${fmtInt(answeredRows.length)} answered · ${fmtPct(modelRows.length ? answeredRows.length / modelRows.length : NaN)}</p>
+          <p>${fmtInt(modelRows.filter(row => row.answered).length)} answered · ${fmtPct(modelRows.length ? modelRows.filter(row => row.answered).length / modelRows.length : NaN)}</p>
         </div>
       </div>
       <div class="mini-kpi-row">
@@ -4665,19 +4676,20 @@ function renderAdvancedCaseTable(cases, completed) {
   const aiMethods = models;
   const methods = [...aiMethods];
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
-  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>This section compares only the ${aiMethods.length} advanced AI models on their supplied subset. Basic models and heuristic benchmarks are not mixed into these results because the noise structures do not match. Recommendations below include incomplete answers.</span>`;
+  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>This section compares only the ${aiMethods.length} advanced AI models on their supplied subset. Basic models and heuristic benchmarks are not mixed into these results because the noise structures do not match. Rows without a valid answer count as 100% revenue loss and have no price.</span>`;
   document.querySelector("#advancedModelsCases thead").innerHTML = `<tr><th>Case / matching inputs</th><th>Scenario</th><th>Demand model</th><th>P*</th>${methods.map(model => `<th>${escape(model)}<br><span class="quiet">Price / loss</span></th>`).join("")}</tr>`;
   document.querySelector("#advancedModelsCases tbody").innerHTML = cases.map(entry => {
     const row = entry[methods[0]];
     const inputs = payload.input_columns.filter(field => !["instance_id", "p_star", "scenario_subtype", "demand_model"].includes(field))
       .map(field => `<div><strong>${escape(GROUP_OPTIONS[field] || field)}:</strong> ${escape(displayLevel(levelValue(row[field])))}</div>`).join("");
-    const complete = aiMethods.every(model => entry[model].answered);
+    const complete = aiMethods.every(model => hasLoss(entry[model]));
     const cells = methods.map(model => {
       const result = aiMethods.includes(model) ? entry[model] : benchmarkRowFor(row, model);
       if (!result) {
         const fit = model === REGRESSION_LABEL ? regressionForRow(row) : null;
         return `<td>${fmtNum(fit?.p_hat)}<br><span class="quiet">${fit?.fit_status === "infeasible" ? "Infeasible: excluded" : "Unavailable"}</span></td>`;
       }
+      if (result.answer_failed) return `<td><span class="quiet">No valid answer</span><br>${fmtLoss(result.rel_rev_loss)}</td>`;
       return `<td>${fmtNum(result.ai_answer)}<br>${result.answered ? fmtLoss(result.rel_rev_loss) : '<span class="quiet">Incomplete answer</span>'}</td>`;
     }).join("");
     return `<tr><th><details><summary>${escape(row.instance_id)}${complete ? "" : " (incomplete)"}</summary>${inputs}</details></th><td>${escape(displayLevel(row.scenario_subtype))}</td><td>${escape(displayLevel(row.demand_model))}</td><td>${fmtNum(row.p_star)}</td>${cells}</tr>`;
@@ -4705,18 +4717,21 @@ function basicAllRunCases() {
     entry.complete = baselines.every(model => entry.methods[model].fixed?.p_star > 0)
       && aiMethods.every(model => runIds.every(run => {
       const row = entry.methods[model][run];
-      return row.answered && Number.isFinite(row.ai_answer) && Number.isFinite(row.rel_rev_loss) && Number.isFinite(row.p_star) && row.p_star > 0;
+      return hasLoss(row) && Number.isFinite(row.p_star) && row.p_star > 0;
     }));
     entry.averages = {};
     if (!entry.complete) continue;
     for (const model of methods) {
       const runRows = baselines.includes(model) ? [entry.methods[model].fixed] : runIds.map(run => entry.methods[model][run]);
+      // Price gaps for a model/case need a usable price in every run; otherwise they are NaN and skipped.
+      const prices = runRows.map(usablePrice);
+      const priced = prices.every(Number.isFinite);
       entry.averages[model] = {
         meanLoss: mean(runRows.map(row => row.rel_rev_loss)),
-        signedGap: mean(runRows.map(row => row.ai_answer - row.p_star)),
-        absoluteGap: mean(runRows.map(row => Math.abs(row.ai_answer - row.p_star))),
-        signedRelativeGap: mean(runRows.map(row => (row.ai_answer - row.p_star) / row.p_star)),
-        absoluteRelativeGap: mean(runRows.map(row => Math.abs(row.ai_answer - row.p_star) / row.p_star)),
+        signedGap: priced ? mean(runRows.map((row, i) => prices[i] - row.p_star)) : NaN,
+        absoluteGap: priced ? mean(runRows.map((row, i) => Math.abs(prices[i] - row.p_star))) : NaN,
+        signedRelativeGap: priced ? mean(runRows.map((row, i) => (prices[i] - row.p_star) / row.p_star)) : NaN,
+        absoluteRelativeGap: priced ? mean(runRows.map((row, i) => Math.abs(prices[i] - row.p_star) / row.p_star)) : NaN,
       };
     }
   }
@@ -4734,13 +4749,13 @@ function renderAllRuns() {
     medianLoss: medianFinite(complete.map(entry => entry.averages[model].meanLoss)),
     priceCount: complete.filter(entry => Number.isFinite(entry.averages[model].signedGap)).length,
   }));
-  document.querySelector("#allRunsNote").innerHTML = `<strong>${fmtInt(complete.length)} complete shared cases across all ${runIds.length} runs</strong><span>${fmtInt(filtered.length)} input cases match the filters; ${fmtInt(filtered.length - complete.length)} cases are excluded because at least one model/run lacks a valid answer or a benchmark lacks a valid loss or positive P*. First, each metric is averaged across five runs within a case, then across cases with equal weights. Revenue losses are averaged as supplied, not recomputed at the average price. Absolute price gaps are calculated before averaging. Positive signed gaps mean overpricing. Heuristic and Regression Heuristic are fixed benchmarks, counted once per case. All five methods use the same cases. Missing AI answers are excluded. Regression fits with a non-positive fitted price count as 100% revenue loss; because that price is not usable, they are left out of the price-gap columns only.</span>`;
+  document.querySelector("#allRunsNote").innerHTML = `<strong>${fmtInt(complete.length)} complete shared cases across all ${runIds.length} runs</strong><span>${fmtInt(filtered.length)} input cases match the filters; ${fmtInt(filtered.length - complete.length)} cases are excluded because a benchmark lacks a valid loss or positive P*. First, each metric is averaged across five runs within a case, then across cases with equal weights. Revenue losses are averaged as supplied, not recomputed at the average price. Absolute price gaps are calculated before averaging. Positive signed gaps mean overpricing. Heuristic and Regression Heuristic are fixed benchmarks, counted once per case. All five methods use the same cases. AI answers without a valid price and regression fits with a non-positive fitted price count as 100% revenue loss; because they have no usable price, they are left out of the price-gap columns only (a model's case-level price gap needs a valid price in all five runs).</span>`;
   document.querySelector("#allRunsLossChart").innerHTML = renderAcrossMeanChart(summaries, {width: 960});
   document.querySelector("#allRunsPriceChart").innerHTML = renderAcrossMeanChart(summaries.map(item => ({...item, meanLoss: item.absoluteRelativeGap})), {width: 960, axisTitle: "Mean absolute relative price gap"});
   document.querySelector("#allRunsSummary tbody").innerHTML = summaries.map(item => `<tr><th>${item.model}</th><td>${fmtInt(complete.length)}</td><td>${baselines.includes(item.model) ? "1 (fixed)" : runIds.length}</td><td>${fmtLoss(item.meanLoss)}</td><td>${fmtLoss(item.medianLoss)}</td><td>${fmtNum(item.signedGap)}${item.priceCount < complete.length ? `<br><span class="quiet">n = ${fmtInt(item.priceCount)}</span>` : ""}</td><td>${fmtNum(item.absoluteGap)}</td><td>${fmtSignedLoss(item.signedRelativeGap)}</td><td>${fmtPct(item.absoluteRelativeGap)}</td></tr>`).join("");
   document.querySelector("#allRunsRunTable tbody").innerHTML = methods.flatMap(model => (baselines.includes(model) ? ["fixed"] : runIds).map(run => {
     const source = complete.map(entry => entry.methods[model][run]);
-    return `<tr><th>${model}</th><td>${run === "fixed" ? "Fixed benchmark" : run}</td><td>${fmtInt(source.length)}</td><td>${fmtLoss(mean(source.map(row => row.rel_rev_loss)))}</td><td>${fmtLoss(median(source.map(row => row.rel_rev_loss)))}</td><td>${fmtSignedLoss(meanFinite(source.map(row => (row.ai_answer - row.p_star) / row.p_star)))}</td><td>${fmtPct(meanFinite(source.map(row => Math.abs(row.ai_answer - row.p_star) / row.p_star)))}</td></tr>`;
+    return `<tr><th>${model}</th><td>${run === "fixed" ? "Fixed benchmark" : run}</td><td>${fmtInt(source.length)}</td><td>${fmtLoss(mean(source.map(row => row.rel_rev_loss)))}</td><td>${fmtLoss(median(source.map(row => row.rel_rev_loss)))}</td><td>${fmtSignedLoss(meanFinite(source.map(row => (usablePrice(row) - row.p_star) / row.p_star)))}</td><td>${fmtPct(meanFinite(source.map(row => Math.abs(usablePrice(row) - row.p_star) / row.p_star)))}</td></tr>`;
   })).join("");
 }
 

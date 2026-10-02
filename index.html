@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=8.6">
+  <link rel="stylesheet" href="styles.css?v=8.7">
 </head>
 <body>
   <header class="topbar">
@@ -36,7 +36,8 @@
       <label id="benchmarkGroupControl">Models in main analysis
         <select id="benchmarkGroup">
           <option value="basic">Basic models (full dataset)</option>
-          <option value="advanced">Advanced models (subset)</option>
+          <option value="advanced">Advanced models (288-case subset)</option>
+          <option value="all">Basic + advanced (288 shared cases)</option>
         </select>
       </label>
       <label>Basic model run
@@ -1119,8 +1120,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Regression fits with a non-positive fitted price and AI rows without a valid answer count as 100% revenue loss; they have no usable price, so price-gap and pricing-direction metrics leave them out. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>8.6</div>
+    <div>8.7</div>
   </footer>
-  <script src="app.js?v=8.6"></script>
+  <script src="app.js?v=8.7"></script>
 </body>
 </html>

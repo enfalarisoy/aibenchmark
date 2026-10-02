@@ -1796,7 +1796,7 @@ function basicRunDescription() {
 function activateBenchmarkRows() {
   const groups = payload.model_groups || {};
   const group = selectedTab === "overview" ? "basic"
-    : selectedTab === "advancedModels" ? "advanced" : selectedBenchmarkGroup;
+    : selectedTab === "advancedModels" ? "all" : selectedBenchmarkGroup;
   const signature = `${group}|${selectedBenchmarkRun}`;
   if (signature === activeBenchmarkSignature) return;
   activeBenchmarkSignature = signature;
@@ -1806,7 +1806,7 @@ function activateBenchmarkRows() {
     : payload.rows;
   rows = source.filter(row => models.includes(row.model)
     && (groups[row.model] === "advanced" || row.run_id === selectedBenchmarkRun));
-  ACROSS_CHART_ORDER = group === "advanced" ? [...models] : [...models, HEURISTIC_LABEL];
+  ACROSS_CHART_ORDER = [...models, HEURISTIC_LABEL];
   rebuildDerivedIndexes();
 }
 
@@ -1825,7 +1825,7 @@ function applyBenchmarkSelection() {
   const shared = comparableCases(() => true).length;
   document.querySelector("#benchmarkRun").disabled = selectedBenchmarkGroup === "advanced";
   benchmarkSelectionDescription =
-    `9-30 data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
+    `9-30 basic and 10-01 advanced data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
     + (selectedBenchmarkGroup === "advanced" ? "" : `Basic models use ${basicRunDescription()}. `)
     + (selectedBenchmarkGroup === "basic" ? "" : "Advanced models use their single supplied run on 96 cases per scenario. ")
     + "Revenue loss values above 100% are capped at 100% in analysis. "
@@ -3598,13 +3598,11 @@ function renderOverview() {
     "scenario_subtype",
     availableOverviewFilterValues("scenario_subtype")
   );
-  const advancedOnly = selectedTab === "advancedModels";
-  const showRegression = !advancedOnly && caseSetHasRegression(completed);
-  const baseOverviewMethods = advancedOnly
-    ? [...models]
-    : ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
+  // Version 8.7: advanced and basic models share the s10/s30 grid, so every tab includes both benchmarks.
+  const showRegression = caseSetHasRegression(completed);
+  const baseOverviewMethods = ACROSS_CHART_ORDER.filter(method => method === HEURISTIC_LABEL || models.includes(method));
   const overviewMethods = showRegression ? [...baseOverviewMethods, REGRESSION_LABEL] : baseOverviewMethods;
-  const benchmarkCompleted = advancedOnly ? completed : completed.filter(caseRows =>
+  const benchmarkCompleted = completed.filter(caseRows =>
     Number.isFinite(heuristicLoss(caseRows))
     && (!showRegression || Number.isFinite(regressionLoss(caseRows)))
   );
@@ -3626,7 +3624,7 @@ function renderOverview() {
   const regressionRevenueTableBody = document.querySelector("#overviewRegressionRevenueTable tbody");
   const regressionSection = document.querySelector("#overviewRegressionSection");
 
-  if (regressionSection) regressionSection.hidden = advancedOnly || !overviewScenarioValues.includes("static");
+  if (regressionSection) regressionSection.hidden = !overviewScenarioValues.includes("static");
 
   document.querySelector("#caseCount").textContent = fmtInt(cases.length);
   document.querySelector("#completeCount").textContent = fmtInt(completed.length);
@@ -3664,9 +3662,8 @@ function renderOverview() {
         || a.meanLoss - b.meanLoss
         || a.model.localeCompare(b.model)
     );
-  document.querySelector("#overviewNote").innerHTML = advancedOnly
-    ? `<strong>${fmtInt(benchmarkCompleted.length)} complete paired advanced-model cases</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. This tab compares only <strong>${models.map(model => modelMeta(model).short).join(", ")}</strong>. Basic models, Heuristic, and Regression Heuristic are not included because they do not share this noise structure. The case leaderboard awards <strong>1 shared point per case</strong>, split evenly across ties.${failedAnswerCount(benchmarkCompleted) ? ` <strong>${fmtInt(failedAnswerCount(benchmarkCompleted))} AI answers without a valid price count as 100% revenue loss</strong> and are left out of pricing-direction counts.` : ""}</span>`
-    : `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression Heuristic</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression Heuristic is included for eligible fits in the selected scenarios." : ""}${failedAnswerCount(benchmarkCompleted) ? ` <strong>${fmtInt(failedAnswerCount(benchmarkCompleted))} AI answers without a valid price count as 100% revenue loss</strong> and are left out of pricing-direction counts.` : ""}</span>`;
+  document.querySelector("#overviewNote").innerHTML =
+    `<strong>${fmtInt(benchmarkCompleted.length)} complete paired cases for this leaderboard</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Overview comparisons include <strong>Heuristic</strong>${showRegression ? " and <strong>Regression Heuristic</strong>" : ""}. The case leaderboard below awards <strong>1 shared point per case</strong>, so a two-way tie gives <strong>0.5</strong> to each tied method.${showRegression ? " Regression Heuristic is included for eligible fits in the selected scenarios." : ""}${failedAnswerCount(benchmarkCompleted) ? ` <strong>${fmtInt(failedAnswerCount(benchmarkCompleted))} AI answers without a valid price count as 100% revenue loss</strong> and are left out of pricing-direction counts.` : ""}</span>`;
 
   document.querySelector("#overviewCaseLeaderboardTable tbody").innerHTML = rankedCaseLeaderboard.length
     ? rankedCaseLeaderboard.map((item, index) => `
@@ -4674,9 +4671,9 @@ function renderGroundTruth() {
 
 function renderAdvancedCaseTable(cases, completed) {
   const aiMethods = models;
-  const methods = [...aiMethods];
+  const methods = [...aiMethods, HEURISTIC_LABEL, REGRESSION_LABEL];
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
-  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>This section compares only the ${aiMethods.length} advanced AI models on their supplied subset. Basic models and heuristic benchmarks are not mixed into these results because the noise structures do not match. Rows without a valid answer count as 100% revenue loss and have no price.</span>`;
+  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The overview above compares the ${aiMethods.length} AI models, Heuristic, and Regression Heuristic on the cases the advanced and basic models share (same instance, noise level, and prompt variant). Basic models use ${basicRunDescription()}; advanced models use their single run. Rows without a valid answer and regression fits with a non-positive price count as 100% revenue loss and have no price.</span>`;
   document.querySelector("#advancedModelsCases thead").innerHTML = `<tr><th>Case / matching inputs</th><th>Scenario</th><th>Demand model</th><th>P*</th>${methods.map(model => `<th>${escape(model)}<br><span class="quiet">Price / loss</span></th>`).join("")}</tr>`;
   document.querySelector("#advancedModelsCases tbody").innerHTML = cases.map(entry => {
     const row = entry[methods[0]];
@@ -4690,6 +4687,7 @@ function renderAdvancedCaseTable(cases, completed) {
         return `<td>${fmtNum(fit?.p_hat)}<br><span class="quiet">${fit?.fit_status === "infeasible" ? "Infeasible: excluded" : "Unavailable"}</span></td>`;
       }
       if (result.answer_failed) return `<td><span class="quiet">No valid answer</span><br>${fmtLoss(result.rel_rev_loss)}</td>`;
+      if (model === REGRESSION_LABEL && !Number.isFinite(result.ai_answer)) return `<td><span class="quiet">Negative price</span><br>${fmtLoss(result.rel_rev_loss)}</td>`;
       return `<td>${fmtNum(result.ai_answer)}<br>${result.answered ? fmtLoss(result.rel_rev_loss) : '<span class="quiet">Incomplete answer</span>'}</td>`;
     }).join("");
     return `<tr><th><details><summary>${escape(row.instance_id)}${complete ? "" : " (incomplete)"}</summary>${inputs}</details></th><td>${escape(displayLevel(row.scenario_subtype))}</td><td>${escape(displayLevel(row.demand_model))}</td><td>${fmtNum(row.p_star)}</td>${cells}</tr>`;
@@ -4766,7 +4764,7 @@ function render() {
   document.querySelector("#benchmarkGroupControl").hidden = advanced;
   const basicOverview = selectedTab === "overview";
 
-  document.querySelector("#benchmarkGroup").value = advanced ? "advanced" : basicOverview ? "basic" : selectedBenchmarkGroup;
+  document.querySelector("#benchmarkGroup").value = advanced ? "all" : basicOverview ? "basic" : selectedBenchmarkGroup;
   document.querySelector("#benchmarkRun").value = String(selectedBenchmarkRun);
   document.querySelector("#benchmarkGroup").disabled = advanced || basicOverview;
   document.querySelector("#benchmarkRun").disabled = (!advanced && !basicOverview && selectedBenchmarkGroup === "advanced");

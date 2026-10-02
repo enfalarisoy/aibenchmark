@@ -73,7 +73,7 @@ const TAB_DESCRIPTIONS = {
   tests: "Compares selected models across matched cases using loss, pricing, distribution, and direction results.",
   withinTests: "Shows how each selected model performs when one benchmark input varies and the other inputs are held matched.",
   tTestsAcross: "Runs paired t tests between selected models on the same filtered benchmark cases.",
-  tTestsRuns: "Runs paired t tests between repeated runs of one selected AI model on the same filtered cases.",
+  tTestsRuns: "Tests whether a basic model's mean loss is the same in every run (joint test), then runs paired t tests between pairs of runs on the same filtered cases.",
   tTestsWithin: "Runs paired t tests between selected input levels within each selected model.",
   groundTruth: "Plots supplied demand and revenue curves with optimal prices and model price recommendations.",
   advancedModels: "Compares the advanced and basic models on their shared subset of benchmark cases.",
@@ -2203,7 +2203,6 @@ function renderDensityPlot(completed) {
     host.innerHTML = `<p class="quiet">No complete matched cases available for density tests.</p>`;
     return;
   }
-  document.querySelector("#densityCutoffLabel").textContent = "Kernel density over 0-15% relative revenue loss";
 
   const width = 920;
   const height = 410;
@@ -2213,10 +2212,17 @@ function renderDensityPlot(completed) {
   const domainMax = 0.15;
   const points = 180;
   const grid = Array.from({ length: points }, (_, index) => index / (points - 1) * domainMax);
+  // Version 8.8: losses are heavily skewed (most near 0, a few near 100%), so the standard deviation
+  // is dominated by the tail and over-smooths the peak. Use Silverman's robust rule instead:
+  // 0.9 * min(SD, IQR / 1.349) * N^(-1/5), so the bandwidth follows the spread of the bulk of the data.
   const pooledSd = stddev(allLosses);
   const pooledN = allLosses.length;
-  const silverman = Number.isFinite(pooledSd) && pooledN > 1 ? 1.06 * pooledSd * pooledN ** -0.2 : domainMax / 20;
+  const pooledIqr = quantile(allLosses, 0.75) - quantile(allLosses, 0.25);
+  const robustSpread = [pooledSd, pooledIqr / 1.349].filter(value => Number.isFinite(value) && value > 0);
+  const silverman = robustSpread.length && pooledN > 1 ? 0.9 * Math.min(...robustSpread) * pooledN ** -0.2 : domainMax / 20;
   const bandwidth = Math.max(silverman, domainMax / 120, 0.0005);
+  document.querySelector("#densityCutoffLabel").textContent =
+    `Kernel density over 0-15% relative revenue loss · bandwidth ${(bandwidth * 100).toFixed(2)} points (robust Silverman rule)`;
 
   const densities = densityMethods.map(model => {
     const values = benchmarkLosses(completed, model).filter(value => value >= 0);
@@ -2238,12 +2244,15 @@ function renderDensityPlot(completed) {
       q25: quantile(values, 0.25),
       q50: quantile(values, 0.5),
       q75: quantile(values, 0.75),
+      // Version 8.9: percentile rank of a 5% loss = share of cases losing 5% or less.
+      atThreshold: shareWhere(values, value => value <= NEAR_OPTIMAL_THRESHOLD),
     };
   });
 
+  // Fit the vertical axis to the tallest curve with a round tick step (about four to six ticks).
   const observedDensityMax = Math.max(...densities.flatMap(item => item.curve), 1);
-  const yStep = observedDensityMax <= 80 ? 20 : Math.ceil(observedDensityMax / 80) * 20;
-  const yMax = Math.max(40, Math.ceil(observedDensityMax / yStep) * yStep);
+  const yStep = [1, 2, 5, 10, 20, 50, 100, 200, 500].find(step => observedDensityMax / step <= 6) || 1000;
+  const yMax = Math.ceil(observedDensityMax / yStep) * yStep;
   const x = value => margin.left + (value / domainMax) * plotWidth;
   const y = value => margin.top + plotHeight - (value / yMax) * plotHeight;
   const xTicks = [0, 0.05, 0.10, 0.15];
@@ -2282,7 +2291,7 @@ function renderDensityPlot(completed) {
         <text x="${lx + 25}" y="${ly + 4}">${meta.short}</text>
       </g>`;
   }).join("");
-  const insetWidth = 430;
+  const insetWidth = 520;
   const insetX = width - margin.right - insetWidth - 8;
   const insetY = margin.top + 10;
   const rowHeight = 23;
@@ -2301,16 +2310,18 @@ function renderDensityPlot(completed) {
         <text x="${insetX + 297}" y="${rowY}" text-anchor="end">${fmtLoss(item.q25)}</text>
         <text x="${insetX + 357}" y="${rowY}" text-anchor="end" class="quartile-median">${fmtLoss(item.q50)}</text>
         <text x="${insetX + 419}" y="${rowY}" text-anchor="end">${fmtLoss(item.q75)}</text>
+        <text x="${insetX + 508}" y="${rowY}" text-anchor="end" class="quartile-median">${fmtPct(item.atThreshold)}</text>
       </g>`;
   }).join("");
   const quartileInset = `
     <g class="quartile-inset">
       <rect x="${insetX}" y="${insetY}" width="${insetWidth}" height="${insetHeight}" rx="10"></rect>
-      <text x="${insetX + 10}" y="${insetY + 18}" text-anchor="start" class="quartile-title">Loss distribution quartiles</text>
+      <text x="${insetX + 10}" y="${insetY + 18}" text-anchor="start" class="quartile-title">Loss quartiles and share of cases at or below ${fmtLoss(NEAR_OPTIMAL_THRESHOLD)} loss</text>
       <text x="${insetX + 24}" y="${insetY + 40}" text-anchor="start" class="quartile-header">Method</text>
       <text x="${insetX + 297}" y="${insetY + 40}" text-anchor="end" class="quartile-header">25th</text>
       <text x="${insetX + 357}" y="${insetY + 40}" text-anchor="end" class="quartile-header">Median</text>
       <text x="${insetX + 419}" y="${insetY + 40}" text-anchor="end" class="quartile-header">75th</text>
+      <text x="${insetX + 508}" y="${insetY + 40}" text-anchor="end" class="quartile-header">Cases ≤ 5%</text>
       ${quartileRows}
     </g>`;
 
@@ -2320,6 +2331,7 @@ function renderDensityPlot(completed) {
       <g class="hist-axis">${xAxis}${yAxis}</g>
       <line x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${margin.top + plotHeight}" y2="${margin.top + plotHeight}" class="axis-line"></line>
       <line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${margin.top + plotHeight}" class="axis-line"></line>
+      <line x1="${x(NEAR_OPTIMAL_THRESHOLD).toFixed(2)}" x2="${x(NEAR_OPTIMAL_THRESHOLD).toFixed(2)}" y1="${margin.top}" y2="${margin.top + plotHeight}" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4" opacity="0.55"></line>
       <g>${paths}</g>
       ${quartileInset}
       <text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" class="axis-title">Relative revenue loss</text>
@@ -3100,6 +3112,147 @@ function basicRunComparisonCases(model, runA, runB) {
   );
 }
 
+// ---------- Version 9.0: joint equality-of-means tests across runs ----------
+function logGamma(value) {
+  // Lanczos approximation (g = 7, n = 9).
+  const coefficients = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+    -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (value < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * value)) - logGamma(1 - value);
+  const shifted = value - 1;
+  let sum = coefficients[0];
+  for (let index = 1; index < 9; index += 1) sum += coefficients[index] / (shifted + index);
+  const t = shifted + 7.5;
+  return 0.5 * Math.log(2 * Math.PI) + (shifted + 0.5) * Math.log(t) - t + Math.log(sum);
+}
+
+function regularizedIncompleteBeta(x, a, b) {
+  // I_x(a, b) by the Lentz continued fraction.
+  if (!(x > 0)) return 0;
+  if (!(x < 1)) return 1;
+  if (x > (a + 1) / (a + b + 2)) return 1 - regularizedIncompleteBeta(1 - x, b, a);
+  const logFront = logGamma(a + b) - logGamma(a) - logGamma(b) + a * Math.log(x) + b * Math.log(1 - x);
+  const tiny = 1e-300;
+  let c = 1;
+  let d = 1 - (a + b) * x / (a + 1);
+  if (Math.abs(d) < tiny) d = tiny;
+  d = 1 / d;
+  let fraction = d;
+  for (let m = 1; m <= 400; m += 1) {
+    const m2 = 2 * m;
+    let numerator = m * (b - m) * x / ((a + m2 - 1) * (a + m2));
+    d = 1 + numerator * d; if (Math.abs(d) < tiny) d = tiny;
+    c = 1 + numerator / c; if (Math.abs(c) < tiny) c = tiny;
+    d = 1 / d; fraction *= d * c;
+    numerator = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1));
+    d = 1 + numerator * d; if (Math.abs(d) < tiny) d = tiny;
+    c = 1 + numerator / c; if (Math.abs(c) < tiny) c = tiny;
+    d = 1 / d;
+    const delta = d * c;
+    fraction *= delta;
+    if (Math.abs(delta - 1) < 1e-13) break;
+  }
+  return Math.exp(logFront) * fraction / a;
+}
+
+function fDistributionUpperTail(f, df1, df2) {
+  if (!Number.isFinite(f) || !(df1 > 0) || !(df2 > 0)) return NaN;
+  if (f <= 0) return 1;
+  // P(F > f) = I_{df2 / (df2 + df1 f)}(df2 / 2, df1 / 2)
+  return regularizedIncompleteBeta(df2 / (df2 + df1 * f), df2 / 2, df1 / 2);
+}
+
+function solveLinearSystem(matrix, vector) {
+  // Gaussian elimination with partial pivoting; returns null when the matrix is singular.
+  const size = vector.length;
+  const a = matrix.map((row, index) => [...row, vector[index]]);
+  for (let col = 0; col < size; col += 1) {
+    let pivot = col;
+    for (let row = col + 1; row < size; row += 1) if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
+    if (Math.abs(a[pivot][col]) < 1e-14) return null;
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    for (let row = col + 1; row < size; row += 1) {
+      const factor = a[row][col] / a[col][col];
+      for (let k = col; k <= size; k += 1) a[row][k] -= factor * a[col][k];
+    }
+  }
+  const solution = new Array(size).fill(0);
+  for (let row = size - 1; row >= 0; row -= 1) {
+    let total = a[row][size];
+    for (let k = row + 1; k < size; k += 1) total -= a[row][k] * solution[k];
+    solution[row] = total / a[row][row];
+  }
+  return solution;
+}
+
+// Tests H0: every run has the same mean loss, using the same cases in every run.
+// `matrix` has one row per case and one column per run.
+function equalRunMeansTests(matrix) {
+  const n = matrix.length;
+  const k = n ? matrix[0].length : 0;
+  const empty = { n, k, runMeans: [], anovaF: NaN, anovaDf1: k - 1, anovaDf2: (k - 1) * (n - 1), anovaP: NaN, hotellingF: NaN, hotellingDf2: n - k + 1, hotellingP: NaN };
+  if (n < 2 || k < 2) return empty;
+  const runMeans = Array.from({ length: k }, (_, j) => mean(matrix.map(row => row[j])));
+  const caseMeans = matrix.map(row => mean(row));
+  const grand = mean(caseMeans);
+  // Repeated-measures (two-way without replication) ANOVA: runs are the treatment, cases are blocks.
+  const ssRuns = n * runMeans.reduce((sum, value) => sum + (value - grand) ** 2, 0);
+  let ssError = 0;
+  matrix.forEach((row, i) => row.forEach((value, j) => { ssError += (value - caseMeans[i] - runMeans[j] + grand) ** 2; }));
+  const df1 = k - 1;
+  const df2 = (k - 1) * (n - 1);
+  const anovaF = ssError > 0 ? (ssRuns / df1) / (ssError / df2) : NaN;
+  // Hotelling's T-squared on the k - 1 differences from the last run: no equal-correlation assumption.
+  let hotellingF = NaN;
+  const hotellingDf2 = n - k + 1;
+  if (hotellingDf2 > 0) {
+    const diffs = matrix.map(row => row.slice(0, k - 1).map(value => value - row[k - 1]));
+    const diffMeans = Array.from({ length: k - 1 }, (_, j) => mean(diffs.map(row => row[j])));
+    const covariance = Array.from({ length: k - 1 }, (_, a) => Array.from({ length: k - 1 }, (_, b) =>
+      diffs.reduce((sum, row) => sum + (row[a] - diffMeans[a]) * (row[b] - diffMeans[b]), 0) / (n - 1)));
+    const solved = solveLinearSystem(covariance, diffMeans);
+    if (solved) {
+      const tSquared = n * diffMeans.reduce((sum, value, index) => sum + value * solved[index], 0);
+      hotellingF = tSquared * hotellingDf2 / ((n - 1) * (k - 1));
+    }
+  }
+  return {
+    n, k, runMeans,
+    anovaF, anovaDf1: df1, anovaDf2: df2, anovaP: fDistributionUpperTail(anovaF, df1, df2),
+    hotellingF, hotellingDf2, hotellingP: fDistributionUpperTail(hotellingF, df1, hotellingDf2),
+  };
+}
+
+function basicRunMatrix(model, runs) {
+  const byCase = new Map();
+  payload.rows.forEach(row => {
+    if (row.model !== model || !runs.includes(Number(row.run_id))) return;
+    if (!passesTestFilters(row) || !hasLoss(row)) return;
+    const entry = byCase.get(row.case_key) || {};
+    entry[Number(row.run_id)] = row.rel_rev_loss;
+    byCase.set(row.case_key, entry);
+  });
+  return [...byCase.values()]
+    .filter(entry => runs.every(run => Number.isFinite(entry[run])))
+    .map(entry => runs.map(run => entry[run]));
+}
+
+function renderEqualRunMeansTable() {
+  const runs = (payload.basic_runs || []).map(Number).filter(Number.isFinite);
+  const table = document.querySelector("#runEqualityTable");
+  if (!table) return;
+  table.querySelector("thead").innerHTML = `<tr><th>Model</th><th>Cases</th>${runs.map(run => `<th>Run ${run}</th>`).join("")}<th>ANOVA F</th><th>df</th><th>p</th><th>Hotelling F</th><th>df</th><th>p</th></tr>`;
+  const signature = tTestFilterSignature();
+  table.querySelector("tbody").innerHTML = basicRunComparisonModels().map(model => {
+    const result = cachedEvidence(runComparisonEvidenceCache, ["equal-means", model, runs.join(","), signature].join("||"),
+      () => equalRunMeansTests(basicRunMatrix(model, runs)));
+    return `<tr><th>${model}</th><td>${fmtInt(result.n)}</td>${runs.map((_, index) => `<td>${fmtLoss(result.runMeans[index])}</td>`).join("")}`
+      + `<td class="${sigClass(result.anovaP)}">${fmtNum(result.anovaF)}</td><td>${fmtInt(result.anovaDf1)}, ${fmtInt(result.anovaDf2)}</td><td class="${sigClass(result.anovaP)}">${fmtP(result.anovaP)}</td>`
+      + `<td class="${sigClass(result.hotellingP)}">${fmtNum(result.hotellingF)}</td><td>${fmtInt(result.anovaDf1)}, ${fmtInt(result.hotellingDf2)}</td><td class="${sigClass(result.hotellingP)}">${fmtP(result.hotellingP)}</td></tr>`;
+  }).join("") || `<tr><td colspan="${runs.length + 8}" class="quiet">No basic models available.</td></tr>`;
+  const activeFilters = activeTestFilterLabels();
+  document.querySelector("#runEqualityNote").innerHTML = `<strong>H0: all ${runs.length} runs have the same mean loss</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Each model is tested on the cases it has in all ${runs.length} runs, so every case is compared with itself. The run columns show each run's mean loss. <strong>ANOVA F</strong> is the repeated-measures F test, the standard test for equal means with the same cases in every run. <strong>Hotelling F</strong> tests the same hypothesis without assuming the runs are equally correlated. A small p-value means at least one run's mean differs. This test always uses all ${runs.length} runs, whatever is ticked under Runs.</span>`;
+}
+
 function renderBasicRunComparisons() {
   const basicModels = basicRunComparisonModels();
   const availableRuns = (payload.basic_runs || []).map(Number).filter(Number.isFinite);
@@ -3249,6 +3402,7 @@ function renderRunTTests() {
   setupRunTTestFilterPanel();
   populateTestFilterControls();
   renderBasicRunComparisons();
+  renderEqualRunMeansTable();
 }
 
 function renderAcrossTTests() {

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=9.0">
+  <link rel="stylesheet" href="styles.css?v=9.1">
 </head>
 <body>
   <header class="topbar">
@@ -979,6 +979,18 @@
           </div>
         </article>
 
+        <article class="comparison-note card" id="runStatisticNote"></article>
+
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Are the five runs' medians, upper quartiles, maxima and minima equal?</h2>
+            <span>Joint permutation tests across the five runs, for each basic model</span>
+          </div>
+          <div class="table-wrap">
+            <table id="runStatisticTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </article>
+
         <article class="comparison-note card" id="runComparisonNote"></article>
 
         <article class="card table-card">
@@ -1132,8 +1144,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Regression fits with a non-positive fitted price and AI rows without a valid answer count as 100% revenue loss; they have no usable price, so price-gap and pricing-direction metrics leave them out. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>9.0</div>
+    <div>9.1</div>
   </footer>
-  <script src="app.js?v=9.0"></script>
+  <script src="app.js?v=9.1"></script>
 </body>
 </html>

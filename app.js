@@ -3253,6 +3253,89 @@ function renderEqualRunMeansTable() {
   document.querySelector("#runEqualityNote").innerHTML = `<strong>H0: all ${runs.length} runs have the same mean loss</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Each model is tested on the cases it has in all ${runs.length} runs, so every case is compared with itself. The run columns show each run's mean loss. <strong>ANOVA F</strong> is the repeated-measures F test, the standard test for equal means with the same cases in every run. <strong>Hotelling F</strong> tests the same hypothesis without assuming the runs are equally correlated. A small p-value means at least one run's mean differs. This test always uses all ${runs.length} runs, whatever is ticked under Runs.</span>`;
 }
 
+// ---------- Version 9.1: joint tests for the median, Q3, maximum and minimum across runs ----------
+const RUN_STATISTIC_PERMUTATIONS = 999;
+const RUN_STATISTICS = [
+  { key: "median", label: "Median", compute: sorted => sortedQuantile(sorted, 0.5) },
+  { key: "q3", label: "Q3 (75th percentile)", compute: sorted => sortedQuantile(sorted, 0.75) },
+  { key: "max", label: "Maximum", compute: sorted => sorted[sorted.length - 1] },
+  { key: "min", label: "Minimum", compute: sorted => sorted[0] },
+];
+
+function sortedQuantile(sorted, q) {
+  // Same linear-interpolation rule as quantile(), for an already sorted array.
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  return sorted[base + 1] === undefined ? sorted[base] : sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+}
+
+// Permutation test of H0: the runs are interchangeable, so a statistic (median, Q3, ...) is the same in every run.
+// Under H0 the run labels within a case carry no information, so each case's values are shuffled across runs.
+// The test statistic is the spread of the per-run statistics (sum of squared deviations from their average).
+function equalRunStatisticsTests(matrix, seed) {
+  const n = matrix.length;
+  const k = n ? matrix[0].length : 0;
+  if (n < 2 || k < 2) return RUN_STATISTICS.map(stat => ({ ...stat, n, values: [], spread: NaN, p: NaN }));
+  const columns = Array.from({ length: k }, () => new Float64Array(n));
+  const statisticsOf = () => {
+    const perStat = RUN_STATISTICS.map(() => new Array(k));
+    for (let j = 0; j < k; j += 1) {
+      const sorted = Float64Array.from(columns[j]).sort();
+      RUN_STATISTICS.forEach((stat, index) => { perStat[index][j] = stat.compute(sorted); });
+    }
+    return perStat;
+  };
+  const spreadOf = values => {
+    const avg = mean(values);
+    return values.reduce((sum, value) => sum + (value - avg) ** 2, 0);
+  };
+  matrix.forEach((row, i) => row.forEach((value, j) => { columns[j][i] = value; }));
+  const observed = statisticsOf();
+  const observedSpread = observed.map(spreadOf);
+  const exceed = RUN_STATISTICS.map(() => 0);
+  const random = seededRandom(seed);
+  const shuffled = new Array(k);
+  for (let rep = 0; rep < RUN_STATISTIC_PERMUTATIONS; rep += 1) {
+    for (let i = 0; i < n; i += 1) {
+      const row = matrix[i];
+      for (let j = 0; j < k; j += 1) shuffled[j] = row[j];
+      for (let j = k - 1; j > 0; j -= 1) {
+        const swap = Math.floor(random() * (j + 1));
+        const hold = shuffled[j]; shuffled[j] = shuffled[swap]; shuffled[swap] = hold;
+      }
+      for (let j = 0; j < k; j += 1) columns[j][i] = shuffled[j];
+    }
+    const permuted = statisticsOf();
+    permuted.forEach((values, index) => {
+      // Tolerance keeps exact ties (for example identical maxima) counted as "at least as large".
+      if (spreadOf(values) >= observedSpread[index] - 1e-15) exceed[index] += 1;
+    });
+  }
+  return RUN_STATISTICS.map((stat, index) => ({
+    ...stat, n,
+    values: observed[index],
+    range: Math.max(...observed[index]) - Math.min(...observed[index]),
+    p: (exceed[index] + 1) / (RUN_STATISTIC_PERMUTATIONS + 1),
+  }));
+}
+
+function renderEqualRunStatisticsTable() {
+  const runs = (payload.basic_runs || []).map(Number).filter(Number.isFinite);
+  const table = document.querySelector("#runStatisticTable");
+  if (!table) return;
+  table.querySelector("thead").innerHTML = `<tr><th>Model</th><th style="text-align:left">Statistic</th><th>Cases</th>${runs.map(run => `<th>Run ${run}</th>`).join("")}<th>Largest gap</th><th>p</th></tr>`;
+  const signature = tTestFilterSignature();
+  table.querySelector("tbody").innerHTML = basicRunComparisonModels().map((model, modelIndex) => {
+    const results = cachedEvidence(runComparisonEvidenceCache, ["equal-statistics", model, runs.join(","), signature].join("||"),
+      () => equalRunStatisticsTests(basicRunMatrix(model, runs), 91031 + modelIndex * 977));
+    return results.map((result, index) => `<tr>${index === 0 ? `<th rowspan="${results.length}">${model}</th>` : ""}<td style="text-align:left">${result.label}</td><td>${fmtInt(result.n)}</td>`
+      + runs.map((_, runIndex) => `<td>${fmtLoss(result.values[runIndex])}</td>`).join("")
+      + `<td>${fmtLoss(result.range)}</td><td class="${sigClass(result.p)}">${fmtP(result.p)}</td></tr>`).join("");
+  }).join("") || `<tr><td colspan="${runs.length + 5}" class="quiet">No basic models available.</td></tr>`;
+  document.querySelector("#runStatisticNote").innerHTML = `<strong>H0: the statistic is the same in all ${runs.length} runs</strong><span>The same joint question as above, asked of the median, the upper quartile (Q3), the maximum and the minimum loss. The F test applies only to means, so these use a <strong>permutation test</strong>: if the runs are interchangeable, shuffling each case's five losses across runs should produce gaps between runs as large as the ones observed. The p-value is the share of ${fmtInt(RUN_STATISTIC_PERMUTATIONS)} shuffles (fixed seed) whose gaps are at least as large, so its smallest possible value is ${(1 / (RUN_STATISTIC_PERMUTATIONS + 1)).toFixed(3)}. "Largest gap" is the highest run value minus the lowest. Uses all ${runs.length} runs and the case filters above.</span>`;
+}
+
 function renderBasicRunComparisons() {
   const basicModels = basicRunComparisonModels();
   const availableRuns = (payload.basic_runs || []).map(Number).filter(Number.isFinite);
@@ -3403,6 +3486,7 @@ function renderRunTTests() {
   populateTestFilterControls();
   renderBasicRunComparisons();
   renderEqualRunMeansTable();
+  renderEqualRunStatisticsTable();
 }
 
 function renderAcrossTTests() {

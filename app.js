@@ -3,6 +3,7 @@ let rows = [];
 let models = [];
 let selectedBenchmarkGroup = "basic";
 let selectedBenchmarkRun = 1;
+let selectedAdvancedRun = "all";
 let benchmarkSelectionDescription = "";
 let rowsByModel = new Map();
 let answeredRowsByModel = new Map();
@@ -13,6 +14,7 @@ let activeBenchmarkSignature = "";
 const overviewFiltersByTab = { overview: {}, advancedModels: {} };
 let allRunsCaseCache = null;
 let averagedBasicRowsCache = null;
+const averagedGroupRowsCache = new Map();
 const withinFieldCache = new Map();
 const withinGroupSummaryCache = new Map();
 const tTestRowCache = new Map();
@@ -73,10 +75,11 @@ const TAB_DESCRIPTIONS = {
   tests: "Compares selected models across matched cases using loss, pricing, distribution, and direction results.",
   withinTests: "Shows how each selected model performs when one benchmark input varies and the other inputs are held matched.",
   tTestsAcross: "Runs paired t tests between selected models on the same filtered benchmark cases.",
-  tTestsRuns: "Tests whether a basic model's mean loss is the same in every run (joint test), then runs paired t tests between pairs of runs on the same filtered cases.",
+  tTestsRuns: "Tests whether a model's mean loss is the same in every run (joint tests for basic and advanced models), then runs two-run repeated-measures ANOVAs between pairs of basic-model runs on the same filtered cases.",
   tTestsWithin: "Runs paired t tests between selected input levels within each selected model.",
   groundTruth: "Plots supplied demand and revenue curves with optimal prices and model price recommendations.",
-  advancedModels: "Compares the advanced and basic models on their shared subset of benchmark cases.",
+  noiseRole: "Compares each method's loss at noise 0.1, at the old noise 0.3 price histories and at the new (10-05) noise 0.3 histories, paired by instance.",
+  advancedModels: "Compares the advanced and basic models on their shared cases; choose an advanced-model run or the average of both.",
 };
 let ACROSS_CHART_ORDER = [];
 const PRICE_DIRECTION_TOLERANCE = 0.05;
@@ -1763,30 +1766,42 @@ function withinTTestUsesRelaxedScenarioMatch(compareField, levelA, levelB) {
   return config.ignoredFields.length > 0;
 }
 
-function averagedBasicRows() {
-  if (averagedBasicRowsCache) return averagedBasicRowsCache;
+function averagedGroupRows(group) {
+  // Version 9.2: per-case averages over a group's runs (five basic runs, or the advanced runs).
+  if (averagedGroupRowsCache.has(group)) return averagedGroupRowsCache.get(group);
+  const groupRuns = (group === "advanced" ? payload.advanced_runs : payload.basic_runs) || [1];
   const byModelCase = new Map();
   for (const row of payload.rows) {
-    if (payload.model_groups[row.model] !== "basic") continue;
+    if (payload.model_groups[row.model] !== group) continue;
     const key = JSON.stringify([row.model, row.case_key]);
     if (!byModelCase.has(key)) byModelCase.set(key, new Map());
     byModelCase.get(key).set(row.run_id, row);
   }
-  averagedBasicRowsCache = [...byModelCase.values()].map(runs => {
+  const averaged = [...byModelCase.values()].map(runs => {
     const source = [...runs.values()][0];
-    const runRows = payload.basic_runs.map(run => runs.get(run));
+    const runRows = groupRuns.map(run => runs.get(run));
     const validInputs = runRows.every(row => row && Number.isFinite(row.p_star) && row.p_star > 0);
     const scored = validInputs && runRows.every(hasLoss);
     const answered = scored && runRows.every(row => Number.isFinite(usablePrice(row)));
-    // One observation per input case, never five independent t-test observations.
-    // A failed run enters the case's mean loss as 100%; the averaged price needs all five prices.
+    // One observation per input case, never several independent t-test observations.
+    // A failed run enters the case's mean loss as 100%; the averaged price needs a price in every run.
     return {...source, run_id: "all", averaged_run_count: runRows.length, answered,
       answer_failed: scored && !answered,
       failed_run_count: runRows.filter(row => row?.answer_failed).length,
       ai_answer: answered ? mean(runRows.map(row => row.ai_answer)) : null,
       rel_rev_loss: scored ? mean(runRows.map(row => row.rel_rev_loss)) : null};
   });
-  return averagedBasicRowsCache;
+  averagedGroupRowsCache.set(group, averaged);
+  return averaged;
+}
+
+function averagedBasicRows() {
+  return averagedGroupRows("basic");
+}
+
+function advancedRunDescription() {
+  const count = (payload.advanced_runs || [1]).length;
+  return selectedAdvancedRun === "all" ? `all ${count} runs (averaged per case)` : `run ${selectedAdvancedRun} of ${count}`;
 }
 
 function basicRunDescription() {
@@ -1797,15 +1812,17 @@ function activateBenchmarkRows() {
   const groups = payload.model_groups || {};
   const group = selectedTab === "overview" ? "basic"
     : selectedTab === "advancedModels" ? "all" : selectedBenchmarkGroup;
-  const signature = `${group}|${selectedBenchmarkRun}`;
+  const signature = `${group}|${selectedBenchmarkRun}|${selectedAdvancedRun}`;
   if (signature === activeBenchmarkSignature) return;
   activeBenchmarkSignature = signature;
   models = payload.models.filter(model => group === "all" || groups[model] === group);
-  const source = selectedBenchmarkRun === "all"
-    ? [...averagedBasicRows(), ...payload.rows.filter(row => groups[row.model] === "advanced")]
-    : payload.rows;
-  rows = source.filter(row => models.includes(row.model)
-    && (groups[row.model] === "advanced" || row.run_id === selectedBenchmarkRun));
+  const basicSource = selectedBenchmarkRun === "all"
+    ? averagedGroupRows("basic")
+    : payload.rows.filter(row => groups[row.model] === "basic" && row.run_id === selectedBenchmarkRun);
+  const advancedSource = selectedAdvancedRun === "all"
+    ? averagedGroupRows("advanced")
+    : payload.rows.filter(row => groups[row.model] === "advanced" && row.run_id === selectedAdvancedRun);
+  rows = [...basicSource, ...advancedSource].filter(row => models.includes(row.model));
   ACROSS_CHART_ORDER = [...models, HEURISTIC_LABEL];
   rebuildDerivedIndexes();
 }
@@ -1825,9 +1842,9 @@ function applyBenchmarkSelection() {
   const shared = comparableCases(() => true).length;
   document.querySelector("#benchmarkRun").disabled = selectedBenchmarkGroup === "advanced";
   benchmarkSelectionDescription =
-    `9-30 basic and 10-01 advanced data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
+    `10-05 data: ${models.length} AI models; ${fmtInt(shared)} shared cases before filters. `
     + (selectedBenchmarkGroup === "advanced" ? "" : `Basic models use ${basicRunDescription()}. `)
-    + (selectedBenchmarkGroup === "basic" ? "" : "Advanced models use their single supplied run on 96 cases per scenario. ")
+    + (selectedBenchmarkGroup === "basic" ? "" : `Advanced models use ${advancedRunDescription()} on 96 cases per scenario. `)
     + "Revenue loss values above 100% are capped at 100% in analysis. "
     + "Across-model results use shared cases; within-model results use each model's available cases. Runs are not pooled. Changing these controls resets filters.";
   render();
@@ -2587,7 +2604,10 @@ function pairedDifferenceEvidenceFromDiffs(diffs, seed) {
   const sd = stddev(diffs);
   const se = Number.isFinite(sd) && n ? sd / Math.sqrt(n) : NaN;
   const t = Number.isFinite(se) && se > 0 ? avg / se : NaN;
-  const tP = Number.isFinite(t) ? 2 * (1 - normalCdf(Math.abs(t))) : NaN;
+  // Version 10.1: the paired comparison is reported as a repeated-measures ANOVA with two conditions.
+  // F = t squared on (1, n - 1) degrees of freedom; its exact p-value equals the exact paired t test p-value.
+  const fStat = Number.isFinite(t) ? t * t : NaN;
+  const tP = Number.isFinite(fStat) && n > 1 ? fDistributionUpperTail(fStat, 1, n - 1) : NaN;
   const random = seededRandom(seed);
   // The t-test p-value is analytic; 600 fixed-seed resamples make the displayed
   // bootstrap interval stable while keeping interactive filtering responsive.
@@ -2619,6 +2639,8 @@ function pairedDifferenceEvidenceFromDiffs(diffs, seed) {
     winRateB: n ? winsB / n : NaN,
     tieRate: n ? ties / n : NaN,
     tP,
+    fStat,
+    fDf2: n - 1,
     bootLow: bootMeans.length ? bootMeans[Math.floor(0.025 * (bootMeans.length - 1))] : NaN,
     bootHigh: bootMeans.length ? bootMeans[Math.floor(0.975 * (bootMeans.length - 1))] : NaN,
     signP: signTestPValue(winsA, winsB),
@@ -3431,17 +3453,18 @@ function renderBasicRunComparisons() {
   document.querySelector("#sourceCount").textContent = fmtInt(eligibleRows.length);
   const modelLabel = selectedRunComparisonModel;
   document.querySelector("#runComparisonNote").innerHTML = pairs.length
-    ? `<strong>${fmtInt(uniqueCases)} input cases available across the selected run pairs</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${modelLabel}</strong> across ${fmtInt(selectedRunComparisonRuns.length)} runs. Each row pairs the same input case between two runs. Mean differences are Run A minus Run B; negative values favor Run A. These tests assess variation between repeated model runs, not differences between different models.</span>`
+    ? `<strong>${fmtInt(uniqueCases)} input cases available across the selected run pairs</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Comparing <strong>${modelLabel}</strong> across ${fmtInt(selectedRunComparisonRuns.length)} runs. Each row pairs the same input case between two runs. Each comparison is a repeated-measures ANOVA with two runs: F on (1, N − 1) degrees of freedom, identical to the squared paired t statistic, with an exact p-value. Mean differences are Run A minus Run B; negative values favor Run A. These tests assess variation between repeated model runs, not differences between different models.</span>`
     : `<strong>Select at least 2 runs</strong><span>Choose two or more runs to compare repeated outputs for the same basic model.</span>`;
 
   document.querySelector("#runComparisonOverallTable tbody").innerHTML = evidence.length
     ? evidence.map(({ runA, runB, result }) => `
         <tr><th>Run ${runA} − Run ${runB}</th><td>${fmtInt(result.n)}</td>
         <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+        <td class="${sigClass(result.tP)}">${fmtNum(result.fStat)}</td><td>1, ${fmtInt(result.fDf2)}</td>
         <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
         <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td></tr>`
       ).join("")
-    : `<tr><td colspan="5" class="quiet">No run-pair t tests are shown until at least two runs are selected.</td></tr>`;
+    : `<tr><td colspan="7" class="quiet">No run-pair t tests are shown until at least two runs are selected.</td></tr>`;
 
   const levelDetails = document.querySelector("#runComparisonLevelsDetails");
   const byLevel = levelDetails.open ? selectedRunComparisonLevels.flatMap((level, levelIndex) =>
@@ -3475,10 +3498,44 @@ function renderBasicRunComparisons() {
     ? byLevel.map(({ level, runA, runB, result }) => `
         <tr><th>${displayLevel(level)}</th><td>Run ${runA} − Run ${runB}</td><td>${fmtInt(result.n)}</td>
         <td class="${sigClass(result.tP)}">${fmtSignedLoss(result.meanDiff)}</td>
+        <td class="${sigClass(result.tP)}">${fmtNum(result.fStat)}</td><td>1, ${fmtInt(result.fDf2)}</td>
         <td class="${sigClass(result.tP)}">${fmtP(result.tP)}</td>
         <td>${fmtSignedLoss(result.bootLow)} to ${fmtSignedLoss(result.bootHigh)}</td></tr>`
       ).join("")
-    : `<tr><td colspan="6" class="quiet">${levelDetails.open ? "No level-based run comparisons are available for the selected split variable and filters." : "Open this section to calculate split-level results."}</td></tr>`;
+    : `<tr><td colspan="8" class="quiet">${levelDetails.open ? "No level-based run comparisons are available for the selected split variable and filters." : "Open this section to calculate split-level results."}</td></tr>`;
+}
+
+// ---------- Version 9.4: the same joint tests for the advanced models (two runs) ----------
+function advancedRunComparisonModels() {
+  return (payload.models || []).filter(model => payload.model_groups?.[model] === "advanced");
+}
+
+function renderAdvancedRunTests() {
+  const runs = (payload.advanced_runs || []).map(Number).filter(Number.isFinite);
+  const meansTable = document.querySelector("#advancedRunEqualityTable");
+  const statsTable = document.querySelector("#advancedRunStatisticTable");
+  if (!meansTable || !statsTable) return;
+  const models = advancedRunComparisonModels();
+  const signature = tTestFilterSignature();
+  const enough = runs.length >= 2;
+  meansTable.querySelector("thead").innerHTML = `<tr><th>Model</th><th>Cases</th>${runs.map(run => `<th>Run ${run}</th>`).join("")}<th>Largest gap</th><th>F</th><th>df</th><th>p</th></tr>`;
+  meansTable.querySelector("tbody").innerHTML = (enough ? models : []).map(model => {
+    const result = cachedEvidence(runComparisonEvidenceCache, ["adv-equal-means", model, runs.join(","), signature].join("||"),
+      () => equalRunMeansTests(basicRunMatrix(model, runs)));
+    const gap = result.runMeans.length ? Math.max(...result.runMeans) - Math.min(...result.runMeans) : NaN;
+    return `<tr><th>${model}</th><td>${fmtInt(result.n)}</td>${runs.map((_, index) => `<td>${fmtLoss(result.runMeans[index])}</td>`).join("")}`
+      + `<td>${fmtLoss(gap)}</td><td class="${sigClass(result.anovaP)}">${fmtNum(result.anovaF)}</td><td>${fmtInt(result.anovaDf1)}, ${fmtInt(result.anovaDf2)}</td><td class="${sigClass(result.anovaP)}">${fmtP(result.anovaP)}</td></tr>`;
+  }).join("") || `<tr><td colspan="${runs.length + 6}" class="quiet">Needs at least two advanced-model runs.</td></tr>`;
+  const activeFilters = activeTestFilterLabels();
+  document.querySelector("#advancedRunEqualityNote").innerHTML = `<strong>Advanced models. H0: all ${runs.length} runs have the same mean loss</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All scenarios selected"}. Each advanced model is tested on the cases it has in all ${runs.length} runs (one prompt variant, 96 cases per scenario). ${runs.length === 2 ? "With two runs the repeated-measures F test and the Hotelling test are the same test, and both equal the paired t test between the two runs (F = t², exact p-value), so one F is shown." : "F is the repeated-measures F test."} The sample is much smaller than for the basic models, so only large differences between runs can be detected.</span>`;
+  statsTable.querySelector("thead").innerHTML = `<tr><th>Model</th><th style="text-align:left">Statistic</th><th>Cases</th>${runs.map(run => `<th>Run ${run}</th>`).join("")}<th>Largest gap</th><th>p</th></tr>`;
+  statsTable.querySelector("tbody").innerHTML = (enough ? models : []).map((model, modelIndex) => {
+    const results = cachedEvidence(runComparisonEvidenceCache, ["adv-equal-statistics", model, runs.join(","), signature].join("||"),
+      () => equalRunStatisticsTests(basicRunMatrix(model, runs), 94031 + modelIndex * 977));
+    return results.map((result, index) => `<tr>${index === 0 ? `<th rowspan="${results.length}">${model}</th>` : ""}<td style="text-align:left">${result.label}</td><td>${fmtInt(result.n)}</td>`
+      + runs.map((_, runIndex) => `<td>${fmtLoss(result.values[runIndex])}</td>`).join("")
+      + `<td>${fmtLoss(result.range)}</td><td class="${sigClass(result.p)}">${fmtP(result.p)}</td></tr>`).join("");
+  }).join("") || `<tr><td colspan="${runs.length + 5}" class="quiet">Needs at least two advanced-model runs.</td></tr>`;
 }
 
 function renderRunTTests() {
@@ -3487,6 +3544,7 @@ function renderRunTTests() {
   renderBasicRunComparisons();
   renderEqualRunMeansTable();
   renderEqualRunStatisticsTable();
+  renderAdvancedRunTests();
 }
 
 function renderAcrossTTests() {
@@ -4136,7 +4194,7 @@ function renderOverview() {
   const meanAbsRevenueGap = mean(eligibleRegressionItems.map(item => Math.abs(item.revenue_pct_gap)).filter(Number.isFinite));
   if (regressionNoteEl) {
     regressionNoteEl.innerHTML = regressionItems.length
-      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum.${negativePriceRegressionItems.length ? ` <strong>${fmtInt(negativePriceRegressionItems.length)} fits with a non-positive fitted price count as 100% revenue loss</strong>; their price gaps are shown as n/a.` : ""}${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
+      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum. The regression is refitted on the 10-05 price histories.${negativePriceRegressionItems.length ? ` <strong>${fmtInt(negativePriceRegressionItems.length)} fits with a non-positive fitted price count as 100% revenue loss</strong>; their price gaps are shown as n/a.` : ""}${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
       : `<strong>No static regression diagnostics for the current filters</strong><span>Regression diagnostics are only available for the <strong>static</strong> instances. Try including static in the scenario filter or relaxing the current overview filters.</span>`;
     if (!showRegression) {
       regressionNoteEl.innerHTML = `<strong>${fmtInt(regressionItems.length)} static regression instances match the filters</strong><span>No eligible shared regression comparison is available for this selection. Matching requires the same scenario and instance ID, including noise level. Non-positive fitted prices count as 100% revenue loss.</span>`;
@@ -4911,7 +4969,7 @@ function renderAdvancedCaseTable(cases, completed) {
   const aiMethods = models;
   const methods = [...aiMethods, HEURISTIC_LABEL, REGRESSION_LABEL];
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
-  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The overview above compares the ${aiMethods.length} AI models, Heuristic, and Regression Heuristic on the cases the advanced and basic models share (same instance, noise level, and prompt variant). Basic models use ${basicRunDescription()}; advanced models use their single run. Rows without a valid answer and regression fits with a non-positive price count as 100% revenue loss and have no price.</span>`;
+  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The overview above compares the ${aiMethods.length} AI models, Heuristic, and Regression Heuristic on the cases the advanced and basic models share (same instance, noise level, price history and prompt variant; 96 per scenario). Basic models use ${basicRunDescription()}; advanced models use ${advancedRunDescription()}. Rows without a valid answer and regression fits with a non-positive price count as 100% revenue loss and have no price.</span>`;
   document.querySelector("#advancedModelsCases thead").innerHTML = `<tr><th>Case / matching inputs</th><th>Scenario</th><th>Demand model</th><th>P*</th>${methods.map(model => `<th>${escape(model)}<br><span class="quiet">Price / loss</span></th>`).join("")}</tr>`;
   document.querySelector("#advancedModelsCases tbody").innerHTML = cases.map(entry => {
     const row = entry[methods[0]];
@@ -4995,15 +5053,70 @@ function renderAllRuns() {
   })).join("");
 }
 
+// ---------- Version 9.5: Role of Noise tab ----------
+let selectedNoiseScenario = "all";
+
+// Exact two-sided paired t test on per-instance differences (p from the F(1, n - 1) distribution of t squared).
+function pairedTExact(diffs) {
+  const n = diffs.length;
+  if (n < 2) return { n, meanDiff: n ? diffs[0] : NaN, t: NaN, p: NaN };
+  const avg = mean(diffs);
+  const variance = diffs.reduce((sum, value) => sum + (value - avg) ** 2, 0) / (n - 1);
+  if (!(variance > 0)) return { n, meanDiff: avg, t: NaN, p: avg === 0 ? 1 : NaN };
+  const t = avg / Math.sqrt(variance / n);
+  return { n, meanDiff: avg, t, p: fDistributionUpperTail(t * t, 1, n - 1) };
+}
+
+function renderNoiseRole() {
+  const study = payload.noise_study;
+  const note = document.querySelector("#noiseRoleNote");
+  if (!study) { note.innerHTML = "<strong>No noise study in this data file.</strong>"; return; }
+  const picker = document.querySelector("#noiseScenario");
+  picker.value = selectedNoiseScenario;
+  const pairs = study.pairs.filter(pair => selectedNoiseScenario === "all" || pair.scenario === selectedNoiseScenario);
+  // Version 10.0: simplest methods first (heuristics), then basic models, then advanced models.
+  const methodRank = method => payload.model_groups?.[method] === "advanced" ? 2 : payload.model_groups?.[method] === "basic" ? 1 : 0;
+  const orderedMethods = [...study.methods].sort((a, b) => methodRank(a) - methodRank(b));
+  const perMethod = orderedMethods.map(method => {
+    const triples = pairs.map(pair => pair.losses[method]).filter(Boolean);
+    const col = index => triples.map(triple => triple[index]);
+    return {
+      method, n: triples.length,
+      low: mean(col(0)), old: mean(col(1)), fresh: mean(col(2)),
+      lowMedian: median(col(0)), oldMedian: median(col(1)), freshMedian: median(col(2)),
+      oldVsNew: pairedTExact(triples.map(triple => triple[2] - triple[1])),
+      oldEffect: pairedTExact(triples.map(triple => triple[1] - triple[0])),
+      newEffect: pairedTExact(triples.map(triple => triple[2] - triple[0])),
+    };
+  });
+  const cell = (result, value = result.meanDiff) => `<td class="${sigClass(result.p)}">${fmtSignedLoss(value)}</td>`;
+  const pCell = result => `<td class="${sigClass(result.p)}">${fmtP(result.p)}</td>`;
+  document.querySelector("#noiseOldNewTable tbody").innerHTML = perMethod.map(item =>
+    `<tr><th>${item.method}</th><td>${fmtInt(item.n)}</td><td>${fmtLoss(item.old)}</td><td>${fmtLoss(item.fresh)}</td>${cell(item.oldVsNew)}<td>${fmtNum(item.oldVsNew.t)}</td>${pCell(item.oldVsNew)}<td>${fmtLoss(item.oldMedian)}</td><td>${fmtLoss(item.freshMedian)}</td></tr>`).join("");
+  document.querySelector("#noiseEffectTable tbody").innerHTML = perMethod.map(item =>
+    `<tr><th>${item.method}</th><td>${fmtInt(item.n)}</td><td>${fmtLoss(item.low)}</td><td>${fmtLoss(item.old)}</td>${cell(item.oldEffect)}${pCell(item.oldEffect)}<td>${fmtLoss(item.fresh)}</td>${cell(item.newEffect)}${pCell(item.newEffect)}${cell(item.oldVsNew)}${pCell(item.oldVsNew)}</tr>`).join("");
+  const instanceCount = pairs.length;
+  document.querySelector("#caseCount").textContent = fmtInt(instanceCount);
+  document.querySelector("#completeCount").textContent = fmtInt(instanceCount);
+  note.innerHTML = `<strong>${fmtInt(instanceCount)} instance pairs${selectedNoiseScenario === "all" ? "" : ` · ${selectedNoiseScenario}`}</strong><span>An instance pair is the same pricing problem (scenario, demand family, parameter set, history length) observed at noise 0.1 and at noise 0.3. The noise 0.3 version exists twice: the <strong>old</strong> histories (9-30 basic files, 10-01 advanced files, 0930 regression file) had their own prices, while the <strong>new</strong> histories (10-05 files) reuse the noise 0.1 prices and scale the same noise draw by three. Each method's loss is first averaged within the instance (basic models: 8 prompt variants x 5 runs; advanced models: run ${study.advanced_run}, the only run in the old files, on history lengths 5 and 15), then compared across instances with an exact paired t test. Failed answers and non-positive regression prices count as a 100% loss, as elsewhere in the app. The new regression fits are recomputed and should be confirmed by the regression's author.</span>`;
+  document.querySelector("#noiseEffectNote").innerHTML = `<strong>Noise effect = mean loss at noise 0.3 minus mean loss at noise 0.1</strong><span>A positive effect means the method loses more revenue under higher noise. Both effects use the same noise 0.1 baseline, so the last two columns (new effect minus old effect) repeat the old-versus-new comparison in the next table: the change in the noise effect is exactly the change in the noise 0.3 loss.</span>`;
+}
+
 function render() {
   activateBenchmarkRows();
-  document.querySelector("#benchmarkControls").hidden = selectedTab === "tTestsRuns";
+  document.querySelector("#benchmarkControls").hidden = selectedTab === "tTestsRuns" || selectedTab === "noiseRole";
   const advanced = selectedTab === "advancedModels";
   document.querySelector("#benchmarkGroupControl").hidden = advanced;
   const basicOverview = selectedTab === "overview";
 
   document.querySelector("#benchmarkGroup").value = advanced ? "all" : basicOverview ? "basic" : selectedBenchmarkGroup;
   document.querySelector("#benchmarkRun").value = String(selectedBenchmarkRun);
+  const advancedRunPicker = document.querySelector("#advancedRun");
+  advancedRunPicker.value = String(selectedAdvancedRun);
+  // The advanced-run choice matters only when advanced models are in the comparison.
+  const advancedInView = advanced || (!basicOverview && selectedBenchmarkGroup !== "basic");
+  advancedRunPicker.disabled = !advancedInView;
+  document.querySelector("#advancedRunControl").hidden = basicOverview;
   document.querySelector("#benchmarkGroup").disabled = advanced || basicOverview;
   document.querySelector("#benchmarkRun").disabled = (!advanced && !basicOverview && selectedBenchmarkGroup === "advanced");
   document.querySelector("#tabDescription").textContent = TAB_DESCRIPTIONS[selectedTab] || "";
@@ -5017,6 +5130,7 @@ function render() {
   if (selectedTab === "within") renderWithin();
   if (selectedTab === "groundTruth") renderGroundTruth();
   if (selectedTab === "advancedModels") renderOverview();
+  if (selectedTab === "noiseRole") renderNoiseRole();
 
 }
 
@@ -5026,6 +5140,10 @@ document.querySelector("#benchmarkGroup").addEventListener("change", event => {
 });
 document.querySelector("#benchmarkRun").addEventListener("change", event => {
   selectedBenchmarkRun = event.target.value === "all" ? "all" : Number(event.target.value);
+  applyBenchmarkSelection();
+});
+document.querySelector("#advancedRun").addEventListener("change", event => {
+  selectedAdvancedRun = event.target.value === "all" ? "all" : Number(event.target.value);
   applyBenchmarkSelection();
 });
 
@@ -5038,6 +5156,11 @@ document.querySelectorAll(".tab").forEach(button => button.addEventListener("cli
   document.querySelector(`#${selectedTab}`).classList.add("active");
   render();
 }));
+
+document.querySelector("#noiseScenario").addEventListener("change", event => {
+  selectedNoiseScenario = event.target.value;
+  renderNoiseRole();
+});
 
 document.querySelector("#groundTruthCasePicker").addEventListener("change", event => {
   selectedGroundTruthKey = event.target.value;

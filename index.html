@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=9.1">
+  <link rel="stylesheet" href="styles.css?v=10.3">
 </head>
 <body>
   <header class="topbar">
@@ -25,10 +25,11 @@
       <button class="tab active" data-tab="tests">Tests (Across Models)</button>
       <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
       <button class="tab" data-tab="tTestsAcross">T Tests (Across Models)</button>
-      <button class="tab" data-tab="tTestsRuns">T Tests (Across Runs)</button>
+      <button class="tab" data-tab="tTestsRuns">ANOVA (Across Runs)</button>
       <button class="tab" data-tab="tTestsWithin">T Tests (Within Models)</button>
       <button class="tab" data-tab="groundTruth">Ground Truth Curves</button>
       <button class="tab" data-tab="advancedModels">Advanced Models</button>
+      <button class="tab" data-tab="noiseRole">Role of Noise</button>
     </nav>
     <p id="tabDescription" class="tab-description"></p>
 
@@ -45,6 +46,12 @@
           <option value="1">Run 1</option><option value="2">Run 2</option>
           <option value="3">Run 3</option><option value="4">Run 4</option><option value="5">Run 5</option>
           <option value="all">All 5 runs (averaged)</option>
+        </select>
+      </label>
+      <label id="advancedRunControl">Advanced model run
+        <select id="advancedRun">
+          <option value="all">Both runs (averaged)</option>
+          <option value="1">Run 1</option><option value="2">Run 2</option>
         </select>
       </label>
     </div>
@@ -991,16 +998,38 @@
           </div>
         </article>
 
+        <article class="comparison-note card" id="advancedRunEqualityNote"></article>
+
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Advanced models: are the runs' means equal?</h2>
+            <span>Joint test of H0: mean loss in run 1 = run 2, for each advanced model</span>
+          </div>
+          <div class="table-wrap">
+            <table id="advancedRunEqualityTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </article>
+
+        <article class="card table-card">
+          <div class="card-heading">
+            <h2>Advanced models: are the runs' medians, upper quartiles, maxima and minima equal?</h2>
+            <span>Joint permutation tests across the advanced-model runs</span>
+          </div>
+          <div class="table-wrap">
+            <table id="advancedRunStatisticTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </article>
+
         <article class="comparison-note card" id="runComparisonNote"></article>
 
         <article class="card table-card">
           <div class="card-heading">
             <h2 id="runComparisonHeading">Basic model run comparisons</h2>
-            <span>Paired tests of relative revenue loss for the same input case</span>
+            <span>Repeated-measures ANOVA (two runs) of relative revenue loss on the same input cases</span>
           </div>
           <div class="table-wrap">
             <table id="runComparisonOverallTable">
-              <thead><tr><th>Comparison</th><th>N</th><th>Mean diff</th><th>T p-value</th><th>Bootstrap 95% CI</th></tr></thead>
+              <thead><tr><th>Comparison</th><th>N</th><th>Mean diff</th><th>F</th><th>df</th><th>p</th><th>Bootstrap 95% CI</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
@@ -1013,7 +1042,7 @@
           </summary>
           <div class="table-wrap compact-table">
             <table id="runComparisonByLevelTable">
-              <thead><tr><th>Level</th><th>Comparison</th><th>N</th><th>Mean diff</th><th>T p-value</th><th>Bootstrap 95% CI</th></tr></thead>
+              <thead><tr><th>Level</th><th>Comparison</th><th>N</th><th>Mean diff</th><th>F</th><th>df</th><th>p</th><th>Bootstrap 95% CI</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
@@ -1130,6 +1159,45 @@
 
 
 
+    <section id="noiseRole" class="panel">
+      <div class="toolbar card" aria-label="Role of noise controls">
+        <label>Scenario
+          <select id="noiseScenario">
+            <option value="all">All scenarios</option>
+            <option value="static">Static</option>
+            <option value="seasonal">Seasonal</option>
+            <option value="duopoly">Duopoly</option>
+          </select>
+        </label>
+      </div>
+      <article class="comparison-note card" id="noiseRoleNote"></article>
+      <article class="comparison-note card" id="noiseEffectNote"></article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Noise effect relative to noise 0.1</h2>
+          <span>Mean loss at noise 0.3 minus mean loss at noise 0.1, with the old and with the new histories</span>
+        </div>
+        <div class="table-wrap">
+          <table id="noiseEffectTable">
+            <thead><tr><th>Method</th><th>Instances</th><th>Noise 0.1 mean</th><th>Old 0.3 mean</th><th>Old effect</th><th>p</th><th>New 0.3 mean</th><th>New effect</th><th>p</th><th>Change in effect</th><th>p</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Old versus new noise 0.3 histories</h2>
+          <span>Paired t test by instance of H0: mean loss is the same on the old and the new noise 0.3 histories</span>
+        </div>
+        <div class="table-wrap">
+          <table id="noiseOldNewTable">
+            <thead><tr><th>Method</th><th>Instances</th><th>Old 0.3 mean</th><th>New 0.3 mean</th><th>New − old</th><th>t</th><th>p</th><th>Old 0.3 median</th><th>New 0.3 median</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
     <section id="within" class="panel" hidden>
       <div class="toolbar card" aria-label="Within-model controls">
         <label>Group cases by
@@ -1144,8 +1212,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Regression fits with a non-positive fitted price and AI rows without a valid answer count as 100% revenue loss; they have no usable price, so price-gap and pricing-direction metrics leave them out. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>9.1</div>
+    <div>10.3</div>
   </footer>
-  <script src="app.js?v=9.1"></script>
+  <script src="app.js?v=10.3"></script>
 </body>
 </html>

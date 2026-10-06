@@ -78,6 +78,8 @@ const TAB_DESCRIPTIONS = {
   tTestsRuns: "Tests whether a model's mean loss is the same in every run (joint tests for basic and advanced models), then runs two-run repeated-measures ANOVAs between pairs of basic-model runs on the same filtered cases.",
   tTestsWithin: "Runs paired t tests between selected input levels within each selected model.",
   groundTruth: "Plots supplied demand and revenue curves with optimal prices and model price recommendations.",
+  fittedDemand: "Compares the true demand curve, the Regression Heuristic's fitted line and the linear demand an AI model says it fitted, over the price history.",
+  anovaModels: "Omnibus repeated-measures ANOVA across models: tests whether all methods share one mean loss on the same cases, run by run.",
   noiseRole: "Compares each method's loss at noise 0.1, at the old noise 0.3 price histories and at the new (10-05) noise 0.3 histories, paired by instance.",
   advancedModels: "Compares the advanced and basic models on their shared cases; choose an advanced-model run or the average of both.",
 };
@@ -4194,7 +4196,7 @@ function renderOverview() {
   const meanAbsRevenueGap = mean(eligibleRegressionItems.map(item => Math.abs(item.revenue_pct_gap)).filter(Number.isFinite));
   if (regressionNoteEl) {
     regressionNoteEl.innerHTML = regressionItems.length
-      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum. The regression is refitted on the 10-05 price histories.${negativePriceRegressionItems.length ? ` <strong>${fmtInt(negativePriceRegressionItems.length)} fits with a non-positive fitted price count as 100% revenue loss</strong>; their price gaps are shown as n/a.` : ""}${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
+      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum. Regression results come from the 1004 regression files for the 10-05 price histories.${negativePriceRegressionItems.length ? ` <strong>${fmtInt(negativePriceRegressionItems.length)} fits with a non-positive fitted price count as 100% revenue loss</strong>; their price gaps are shown as n/a.` : ""}${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
       : `<strong>No static regression diagnostics for the current filters</strong><span>Regression diagnostics are only available for the <strong>static</strong> instances. Try including static in the scenario filter or relaxing the current overview filters.</span>`;
     if (!showRegression) {
       regressionNoteEl.innerHTML = `<strong>${fmtInt(regressionItems.length)} static regression instances match the filters</strong><span>No eligible shared regression comparison is available for this selection. Matching requires the same scenario and instance ID, including noise level. Non-positive fitted prices count as 100% revenue loss.</span>`;
@@ -4927,7 +4929,10 @@ function renderGroundTruth() {
     item.revenueGap = revenueAtOptimalPrice ? (item.revenue - revenueAtOptimalPrice) / revenueAtOptimalPrice : NaN;
   });
   // Keep every displayed recommendation inside both charts, including extreme estimates.
-  const displayedPrices = [entry.p_star, ...summaries.map(item => item.price)]
+  // Version 10.4: the price history the models saw (parsed from the 10-05 prompts).
+  const ownPrice = record => entry.dataset === "duopoly" ? record.p2 : record.price;
+  const history = entry.history_source ? (entry.rows || []) : [];
+  const displayedPrices = [entry.p_star, ...summaries.map(item => item.price), ...history.map(ownPrice)]
     .filter(price => Number.isFinite(price) && price > 0);
   const displayedMinPrice = Math.min(...displayedPrices);
   const displayedMaxPrice = Math.max(...displayedPrices);
@@ -4938,15 +4943,22 @@ function renderGroundTruth() {
     const price = pMin + (pMax - pMin) * index / 120;
     return [price, groundTruthDemand(entry, price, referenceRow)];
   });
-  const maxDemand = Math.max(...points.map(point => point[1]), 1);
+  const maxDemand = Math.max(...points.map(point => point[1]), ...history.map(record => record.demand), 1);
   const revenuePoints = points.map(([price, demand]) => [price, price * demand]);
-  const maxRevenue = Math.max(...revenuePoints.map(point => point[1]), 1);
+  const maxRevenue = Math.max(...revenuePoints.map(point => point[1]), ...history.map(record => ownPrice(record) * record.demand), 1);
   const width = 920, height = 490, margin = { left: 78, right: 24, top: 100, bottom: 66 };
   const x = value => margin.left + (value - pMin) / (pMax - pMin) * (width - margin.left - margin.right);
   const y = value => height - margin.bottom - value / maxDemand * (height - margin.top - margin.bottom);
   const curve = points.map(([price, demand], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${y(demand).toFixed(1)}`).join(" ");
   const revenueY = value => height - margin.bottom - value / maxRevenue * (height - margin.top - margin.bottom);
   const revenueCurve = revenuePoints.map(([price, revenue], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${revenueY(revenue).toFixed(1)}`).join(" ");
+  const historyDot = (record, yValue, scale) => {
+    const weekend = record.env === "weekend";
+    const detail = entry.dataset === "duopoly" ? `, competitor price ${record.p1}` : record.env ? `, ${record.env}` : "";
+    return `<circle cx="${x(ownPrice(record)).toFixed(1)}" cy="${scale(yValue).toFixed(1)}" r="4.5" fill="${weekend ? "#ffffff" : "#111827"}" fill-opacity="${weekend ? 1 : 0.6}" stroke="#111827" stroke-width="1.5"><title>Price ${ownPrice(record)}, demand ${record.demand}${detail}</title></circle>`;
+  };
+  const historyDemandDots = history.map(record => historyDot(record, record.demand, y)).join("");
+  const historyRevenueDots = history.map(record => historyDot(record, ownPrice(record) * record.demand, revenueY)).join("");
   const markerColors = ["#4677c6", "#ca6b96", "#e68a3b", "#287b83", "#9a6229", "#777777", "#4d8f68", "#7a5ca5"];
   const markers = summaries.filter(item => Number.isFinite(item.price)).map((item, index) => {
     const color = markerColors[summaries.indexOf(item) % markerColors.length];
@@ -4954,11 +4966,21 @@ function renderGroundTruth() {
   }).join("");
   const priceTicks = Array.from({ length: 6 }, (_, index) => pMin + (pMax - pMin) * index / 5);
   const xAxis = priceTicks.map(price => `<line x1="${x(price)}" x2="${x(price)}" y1="${height - margin.bottom}" y2="${height - margin.bottom + 6}" stroke="#4c5966"/><text x="${x(price)}" y="${height - margin.bottom + 24}" text-anchor="middle" font-size="12">${price.toFixed(0)}</text>`).join("");
-  const legendItems = [{ label: "Ground truth", color: "#1f5f98" }, { label: "P*", color: "#d94f45" }, ...summaries.map((item, index) => ({ label: modelMeta(item.model).short, color: markerColors[index % markerColors.length] }))];
+  const legendItems = [{ label: "Ground truth", color: "#1f5f98" }, { label: "P*", color: "#d94f45" }, ...(history.length ? [{ label: "Price history (dots)", color: "#111827" }] : []), ...summaries.map((item, index) => ({ label: modelMeta(item.model).short, color: markerColors[index % markerColors.length] }))];
   const legend = legendItems.map((item, index) => { const lx = 78 + (index % 4) * 210; const ly = 18 + Math.floor(index / 4) * 24; return `<line x1="${lx}" x2="${lx + 18}" y1="${ly}" y2="${ly}" stroke="${item.color}" stroke-width="3"/><text x="${lx + 24}" y="${ly + 4}" font-size="12" fill="#334155">${item.label}</text>`; }).join("");
-  document.querySelector("#groundTruthChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth demand curve and model price estimates">${legend}<path d="${curve}" fill="none" stroke="#1f5f98" stroke-width="3"/><line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth demand</text></svg>`;
-  document.querySelector("#groundTruthRevenueChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth revenue curve and model price estimates">${legend}<path d="${revenueCurve}" fill="none" stroke="#1f5f98" stroke-width="3"/><line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P* / R*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth revenue</text></svg>`;
+  document.querySelector("#groundTruthChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth demand curve and model price estimates">${legend}<path d="${curve}" fill="none" stroke="#1f5f98" stroke-width="3"/>${historyDemandDots}<line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth demand</text></svg>`;
+  document.querySelector("#groundTruthRevenueChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Ground-truth revenue curve and model price estimates">${legend}<path d="${revenueCurve}" fill="none" stroke="#1f5f98" stroke-width="3"/>${historyRevenueDots}<line x1="${x(entry.p_star)}" x2="${x(entry.p_star)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#d94f45" stroke-width="3"/>${markers}<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>${xAxis}<text x="${x(entry.p_star)}" y="${height - margin.bottom + 42}" text-anchor="middle" fill="#b43b33" font-size="12">P* / R*</text><text x="${width / 2}" y="${height - 2}" text-anchor="middle">Price</text><text transform="translate(20 ${height / 2}) rotate(-90)" text-anchor="middle">Ground-truth revenue</text></svg>`;
   document.querySelector("#groundTruthNote").innerHTML = `<strong>${entry.dataset} · ${displayLevel(entry.model)} · parameter ${entry.letter.toUpperCase()}</strong><span>Curves use the supplied ground-truth parameters. Colored markers are mean recommended prices across the prompt variants for this instance; the price range expands automatically to include every displayed estimate.${entry.dataset === "duopoly" ? ` The curve holds competitor price at ${entry.p1_true.toFixed(2)}.` : ""}</span>`;
+  const historyTable = document.querySelector("#groundTruthHistoryTable");
+  const historyColumns = entry.dataset === "duopoly" ? ["Period", "Own price", "Competitor price", "Demand", "Revenue"]
+    : entry.dataset === "season" ? ["Period", "Price", "Day type", "Demand", "Revenue"] : ["Period", "Price", "Demand", "Revenue"];
+  historyTable.querySelector("thead").innerHTML = `<tr>${historyColumns.map(column => `<th>${column}</th>`).join("")}</tr>`;
+  historyTable.querySelector("tbody").innerHTML = history.length
+    ? history.map((record, index) => `<tr><th>${index + 1}</th><td>${ownPrice(record).toFixed(2)}</td>${entry.dataset === "duopoly" ? `<td>${record.p1.toFixed(2)}</td>` : entry.dataset === "season" ? `<td>${record.env}</td>` : ""}<td>${fmtInt(record.demand)}</td><td>${fmtNum(ownPrice(record) * record.demand)}</td></tr>`).join("")
+    : `<tr><td colspan="${historyColumns.length}" class="quiet">No 10-05 price history is available for this instance (it is not part of the current benchmark).</td></tr>`;
+  document.querySelector("#groundTruthHistoryNote").innerHTML = history.length
+    ? `<strong>${fmtInt(history.length)} observed periods</strong><span>Dots show the price history given to the models, read from the prompts in the 10-05 result files.${entry.dataset === "season" ? " Filled dots are weekdays and hollow dots are weekends; the curve is the demand for the next period's day type, so the other day type's dots lie off it." : ""}${entry.dataset === "duopoly" ? " Each observation was generated at that period's competitor price, while the curve fixes the competitor at the current price, so dots lie off the curve by the competitor effect as well as by noise." : " Vertical distance from the curve is the demand noise."} Hover over a dot for its values.</span>`
+    : `<strong>No price history</strong><span>This instance is not part of the 10-05 benchmark.</span>`;
   document.querySelector("#groundTruthEstimateTable tbody").innerHTML = summaries.map(item => `<tr><th>${modelMeta(item.model).short}</th><td>${item.price.toFixed(2)}</td><td>${(item.price - entry.p_star).toFixed(2)}</td><td>${fmtNum(item.revenue)}</td><td>${fmtPct(item.revenueGap)}</td><td>${fmtLoss(item.loss)}</td></tr>`).join("");
 }
 
@@ -5053,6 +5075,235 @@ function renderAllRuns() {
   })).join("");
 }
 
+// ---------- Version 10.5: Regression Heuristic Fitted Demands tab (renamed in 10.7) ----------
+let fittedSelection = { instance: "", model: "", run: 1, variant: "role_concise_none_distnone" };
+let fittedRowIndex = null;
+const fittedEscape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+
+function fittedRows() {
+  if (fittedRowIndex) return fittedRowIndex;
+  fittedRowIndex = new Map();
+  payload.rows.forEach(row => {
+    const key = `${row.scenario_subtype === "seasonal" ? "season" : row.scenario_subtype}/${row.instance_id}`;
+    if (!fittedRowIndex.has(key)) fittedRowIndex.set(key, []);
+    fittedRowIndex.get(key).push(row);
+  });
+  return fittedRowIndex;
+}
+
+// The Regression Heuristic's demand line for the next period: a + b p, with the competitor held at its current price.
+function regressionLine(regression) {
+  if (!regression || !Number.isFinite(regression.a_intercept) || !Number.isFinite(regression.b_slope)) return null;
+  const shift = Number.isFinite(regression.c_slope) && Number.isFinite(regression.p_c_current) ? regression.c_slope * regression.p_c_current : 0;
+  return { a: regression.a_intercept + shift, b: regression.b_slope };
+}
+
+function renderFittedCoverage() {
+  const table = document.querySelector("#fittedDemandCoverageTable tbody");
+  if (table.dataset.done) return;
+  const stats = new Map(payload.models.map(model => [model, { n: 0, hit: 0, by: { static: [0, 0], seasonal: [0, 0], duopoly: [0, 0] }, ratios: [] }]));
+  payload.rows.forEach(row => {
+    const item = stats.get(row.model);
+    item.n += 1; item.by[row.scenario_subtype][1] += 1;
+    if (!row.stated_fit) return;
+    item.hit += 1; item.by[row.scenario_subtype][0] += 1;
+    const line = regressionLine(regressionForRow(row));
+    if (line && line.b < 0) item.ratios.push(row.stated_fit[1] / line.b);
+  });
+  const share = ([hit, total]) => total ? fmtPct(hit / total) : "-";
+  table.innerHTML = payload.models.map(model => {
+    const item = stats.get(model);
+    const close = item.ratios.filter(ratio => Math.abs(ratio - 1) <= 0.1).length;
+    return `<tr><th>${model}</th><td>${fmtInt(item.n)}</td><td>${share(item.by.static)}</td><td>${share(item.by.seasonal)}</td><td>${share(item.by.duopoly)}</td><td>${share([item.hit, item.n])}</td><td>${fmtNum(median(item.ratios))}</td><td>${item.ratios.length ? fmtPct(close / item.ratios.length) : "-"}</td></tr>`;
+  }).join("");
+  table.dataset.done = "1";
+}
+
+function renderFittedDemand() {
+  const entries = [...groundTruthByKey.entries()].filter(([key, entry]) => entry.history_source && fittedRows().has(key))
+    .sort(([, a], [, b]) => `${a.dataset}/${a.id}`.localeCompare(`${b.dataset}/${b.id}`));
+  const note = document.querySelector("#fittedDemandNote");
+  if (!entries.length) { note.innerHTML = "<strong>No price histories in this data file.</strong>"; return; }
+  if (!entries.some(([key]) => key === fittedSelection.instance)) fittedSelection.instance = entries[0][0];
+  const fill = (id, options, value) => { const el = document.querySelector(id); el.innerHTML = options.map(([v, label]) => `<option value="${v}">${label}</option>`).join(""); el.value = String(value); };
+  fill("#fittedInstance", entries.map(([key, entry]) => [key, `${entry.dataset} · ${displayLevel(entry.model)} · ${entry.letter.toUpperCase()} · h=${entry.length} · sigma=${entry.sigma}`]), fittedSelection.instance);
+  const entry = groundTruthByKey.get(fittedSelection.instance);
+  const instanceRows = fittedRows().get(fittedSelection.instance);
+  const availableModels = payload.models.filter(model => instanceRows.some(row => row.model === model));
+  if (!availableModels.includes(fittedSelection.model)) fittedSelection.model = availableModels[0];
+  fill("#fittedModel", availableModels.map(model => [model, model]), fittedSelection.model);
+  const modelRows = instanceRows.filter(row => row.model === fittedSelection.model);
+  const runs = [...new Set(modelRows.map(row => Number(row.run_id)))].sort((a, b) => a - b);
+  if (!runs.includes(fittedSelection.run)) fittedSelection.run = runs[0];
+  fill("#fittedRun", runs.map(run => [run, `Run ${run}`]), fittedSelection.run);
+  const variants = [...new Set(modelRows.map(row => row.variant))].sort();
+  if (!variants.includes(fittedSelection.variant)) fittedSelection.variant = variants[0];
+  fill("#fittedVariant", variants.map(variant => [variant, variant]), fittedSelection.variant);
+  const row = modelRows.find(item => Number(item.run_id) === fittedSelection.run && item.variant === fittedSelection.variant);
+  const regression = regressionForRow(row);
+  const regLine = regressionLine(regression);
+  // Version 10.6: least-squares line computed here from the plotted dots (demand on own price only).
+  const historyAll = entry.rows || [];
+  const lsLine = (() => {
+    const n = historyAll.length;
+    if (n < 2) return null;
+    const px = historyAll.map(record => entry.dataset === "duopoly" ? record.p2 : record.price), dy = historyAll.map(record => record.demand);
+    const mx = mean(px), my = mean(dy);
+    const sxx = px.reduce((sum, value) => sum + (value - mx) ** 2, 0);
+    if (!(sxx > 0)) return null;
+    const b = px.reduce((sum, value, index) => sum + (value - mx) * (dy[index] - my), 0) / sxx;
+    return { a: my - b * mx, b };
+  })();
+  const aiLine = row.stated_fit ? { a: row.stated_fit[0], b: row.stated_fit[1], text: row.stated_fit[2] } : null;
+  const ownPrice = record => entry.dataset === "duopoly" ? record.p2 : record.price;
+  const history = entry.rows || [];
+  const aiPrice = usablePrice(row);
+  const regPrice = regressionPriceUsable(regression) ? regression.p_hat : NaN;
+  const prices = [entry.p_star, aiPrice, regPrice, ...history.map(ownPrice)].filter(price => Number.isFinite(price) && price > 0);
+  const pad = Math.max((Math.max(...prices) - Math.min(...prices)) * 0.08, entry.p_star * 0.05, 0.5);
+  const pMin = Math.max(0.01, Math.min(...prices) - pad), pMax = Math.max(...prices) + pad;
+  const truth = Array.from({ length: 121 }, (_, index) => { const price = pMin + (pMax - pMin) * index / 120; return [price, groundTruthDemand(entry, price, row)]; });
+  const maxDemand = Math.max(...truth.map(point => point[1]), ...history.map(record => record.demand), 1) * 1.12;
+  const width = 920, height = 520, margin = { left: 78, right: 40, top: 112, bottom: 66 };
+  const x = value => margin.left + (value - pMin) / (pMax - pMin) * (width - margin.left - margin.right);
+  const y = value => height - margin.bottom - value / maxDemand * (height - margin.top - margin.bottom);
+  const path = points => points.map(([price, demand], index) => `${index ? "L" : "M"}${x(price).toFixed(1)},${y(demand).toFixed(1)}`).join(" ");
+  const linePath = line => path([[pMin, line.a + line.b * pMin], [pMax, line.a + line.b * pMax]]);
+  const colors = { truth: "#1f5f98", regression: "#9a6229", ai: "#c2410c", optimal: "#d94f45", ls: "#16a34a" };
+  const sameLine = lsLine && regLine && Math.abs(lsLine.a - regLine.a) <= 1e-6 * Math.max(1, Math.abs(regLine.a)) && Math.abs(lsLine.b - regLine.b) <= 1e-6 * Math.max(1, Math.abs(regLine.b));
+  const verticalLabels = [];
+  const vertical = (price, color, dash, label) => {
+    if (!Number.isFinite(price)) return "";
+    verticalLabels.push({ price, color, label });
+    return `<line x1="${x(price)}" x2="${x(price)}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="${color}" stroke-width="1.5" stroke-dasharray="${dash}" opacity="0.8"/>`;
+  };
+  // Price labels sit above the plot, staggered so close prices stay readable.
+  const drawVerticalLabels = () => verticalLabels.sort((a, b) => a.price - b.price).map((item, index) =>
+    `<text x="${x(item.price)}" y="${margin.top - 8 - (index % 3) * 14}" text-anchor="middle" font-size="11.5" font-weight="600" fill="${item.color}">${item.label} ${item.price.toFixed(2)}</text>`).join("");
+  const dots = history.map(record => { const weekend = record.env === "weekend"; return `<circle cx="${x(ownPrice(record)).toFixed(1)}" cy="${y(record.demand).toFixed(1)}" r="4.5" fill="${weekend ? "#ffffff" : "#111827"}" fill-opacity="${weekend ? 1 : 0.6}" stroke="#111827" stroke-width="1.5"><title>Price ${ownPrice(record)}, demand ${record.demand}${entry.dataset === "duopoly" ? `, competitor price ${record.p1}` : record.env ? `, ${record.env}` : ""}</title></circle>`; }).join("");
+  const priceTicks = Array.from({ length: 6 }, (_, index) => pMin + (pMax - pMin) * index / 5);
+  const demandTicks = Array.from({ length: 5 }, (_, index) => maxDemand * index / 4);
+  const axes = priceTicks.map(price => `<line x1="${x(price)}" x2="${x(price)}" y1="${height - margin.bottom}" y2="${height - margin.bottom + 6}" stroke="#4c5966"/><text x="${x(price)}" y="${height - margin.bottom + 24}" text-anchor="middle" font-size="12">${price.toFixed(price < 20 ? 1 : 0)}</text>`).join("")
+    + demandTicks.map(value => `<line x1="${margin.left}" x2="${width - margin.right}" y1="${y(value)}" y2="${y(value)}" stroke="#e5e7eb"/><text x="${margin.left - 8}" y="${y(value) + 4}" text-anchor="end" font-size="12">${value.toFixed(0)}</text>`).join("");
+  const legendItems = [
+    { label: "Actual (true) demand", color: colors.truth, dash: "", width: 3 },
+    { label: sameLine ? "Least-squares fit to the dots (same line as the heuristic)" : "Least-squares fit to the dots (price only)", color: colors.ls, dash: "", width: 7, opacity: 0.45 },
+    { label: "Regression Heuristic fit", color: colors.regression, dash: "8 5", width: 2.5 },
+    { label: aiLine ? `${fittedSelection.model} stated fit` : `${fittedSelection.model}: no stated fit`, color: colors.ai, dash: "3 4", width: 2.5 },
+  ];
+  const legend = legendItems.map((item, index) => { const lx = 78 + (index % 2) * 430, ly = 16 + Math.floor(index / 2) * 22; return `<line x1="${lx}" x2="${lx + 26}" y1="${ly}" y2="${ly}" stroke="${item.color}" stroke-width="${item.width}" stroke-opacity="${item.opacity || 1}" stroke-dasharray="${item.dash}"/><text x="${lx + 34}" y="${ly + 4}" font-size="12" fill="#334155">${item.label}</text>`; }).join("");
+  document.querySelector("#fittedDemandChart").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="True demand, regression fit and AI stated fit"><defs><clipPath id="fittedClip"><rect x="${margin.left}" y="${margin.top}" width="${width - margin.left - margin.right}" height="${height - margin.top - margin.bottom}"/></clipPath></defs>${legend}${axes}`
+    + `<g clip-path="url(#fittedClip)"><path d="${path(truth)}" fill="none" stroke="${colors.truth}" stroke-width="3"/>`
+    + (lsLine ? `<path d="${linePath(lsLine)}" fill="none" stroke="${colors.ls}" stroke-width="7" stroke-opacity="0.45" stroke-linecap="round"/>` : "")
+    + (regLine ? `<path d="${linePath(regLine)}" fill="none" stroke="${colors.regression}" stroke-width="2.5" stroke-dasharray="8 5"/>` : "")
+    + (aiLine ? `<path d="${linePath(aiLine)}" fill="none" stroke="${colors.ai}" stroke-width="2.5" stroke-dasharray="3 4"/>` : "")
+    + `${dots}</g>${vertical(entry.p_star, colors.optimal, "", "Optimal price P*")}${vertical(regPrice, colors.regression, "8 5", "Regression price")}${vertical(aiPrice, colors.ai, "3 4", "AI price")}${drawVerticalLabels()}`
+    + `<line x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" stroke="#4c5966"/><line x1="${margin.left}" x2="${margin.left}" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#4c5966"/>`
+    + `<text x="${(margin.left + width - margin.right) / 2}" y="${height - 14}" text-anchor="middle" font-size="14">Price</text><text transform="translate(20 ${(margin.top + height - margin.bottom) / 2}) rotate(-90)" text-anchor="middle" font-size="14">Demand</text></svg>`;
+  const implied = line => line && line.b < 0 ? -line.a / (2 * line.b) : NaN;
+  const num = value => Number.isFinite(value) ? fmtNum(value) : "-";
+  const price2 = value => Number.isFinite(value) ? value.toFixed(2) : "-";
+  // Mean squared error of each curve against the plotted observations.
+  const mse = predict => history.length ? mean(history.map(record => (record.demand - predict(record)) ** 2)) : NaN;
+  const truthAt = record => {
+    const base = groundTruthDemand(entry, ownPrice(record), { next_env: record.env });
+    return entry.dataset === "duopoly" ? Math.max(base + entry.c1 * (record.p1 - entry.p1_true), 0) : base;
+  };
+  const heuristicAt = record => regression.a_intercept + regression.b_slope * ownPrice(record)
+    + (entry.dataset === "season" ? (regression.c_slope || 0) * (record.env === "weekend" ? 1 : 0) : entry.dataset === "duopoly" ? (regression.c_slope || 0) * record.p1 : 0);
+  const aiMse = !aiLine || entry.dataset === "duopoly" ? NaN
+    : (() => { const used = history.filter(record => entry.dataset !== "season" || record.env === (row.next_env || "weekday")); return used.length ? mean(used.map(record => (record.demand - (aiLine.a + aiLine.b * ownPrice(record))) ** 2)) : NaN; })();
+  document.querySelector("#fittedDemandTable tbody").innerHTML =
+    `<tr><th>Actual (true) demand, ${displayLevel(entry.model)}</th><td>-</td><td>-</td><td>${num(mse(truthAt))}</td><td>-</td><td>${price2(entry.p_star)} (P*)</td><td>${fmtLoss(0)}</td></tr>`
+    + `<tr><th>Least-squares fit to the dots (price only)</th><td>${num(lsLine?.a)}</td><td>${num(lsLine?.b)}</td><td>${lsLine ? num(mse(record => lsLine.a + lsLine.b * ownPrice(record))) : "-"}</td><td>${price2(implied(lsLine))}</td><td>-</td><td>-</td></tr>`
+    + `<tr><th>Regression Heuristic fit</th><td>${num(regLine?.a)}</td><td>${num(regLine?.b)}</td><td>${regLine ? num(mse(heuristicAt)) : "-"}</td><td>${price2(implied(regLine))}</td><td>${price2(regPrice)}</td><td>${fmtLoss(regressionLoss({ [fittedSelection.model]: row }))}</td></tr>`
+    + `<tr><th>${fittedSelection.model} stated fit</th><td>${num(aiLine?.a)}</td><td>${num(aiLine?.b)}</td><td>${num(aiMse)}</td><td>${price2(implied(aiLine))}</td><td>${price2(aiPrice)}</td><td>${fmtLoss(row.rel_rev_loss)}</td></tr>`;
+  const stated = modelRows.filter(item => item.stated_fit).sort((a, b) => a.run_id - b.run_id || a.variant.localeCompare(b.variant));
+  document.querySelector("#fittedDemandAnswersTable tbody").innerHTML = stated.length
+    ? stated.map(item => `<tr><th>${item.run_id}</th><td style="text-align:left">${item.variant}</td><td style="text-align:left">${fittedEscape(item.stated_fit[2])}</td><td>${num(item.stated_fit[0])}</td><td>${num(item.stated_fit[1])}</td><td>${price2(usablePrice(item))}</td><td>${fmtLoss(item.rel_rev_loss)}</td></tr>`).join("")
+    : `<tr><td colspan="7" class="quiet">No answer of this model on this instance states a linear demand equation.</td></tr>`;
+  document.querySelector("#caseCount").textContent = fmtInt(entries.length);
+  document.querySelector("#completeCount").textContent = fmtInt(stated.length);
+  const controls = entry.dataset === "season" ? "a weekend shift" : entry.dataset === "duopoly" ? "the competitor's price" : "";
+  note.innerHTML = `<strong>${entry.dataset} · ${displayLevel(entry.model)} · parameter ${entry.letter.toUpperCase()} · ${fittedSelection.model}, run ${fittedSelection.run}</strong><span>`
+    + `<strong>Lines.</strong> <em>Actual demand</em> (blue) is the true curve for the next period. <em>Least-squares fit to the dots</em> (wide green band) is the line that minimises the mean squared error of demand on price, computed here from the plotted observations. <em>Regression Heuristic fit</em> (dashed brown) is the line stored in the regression results. `
+    + (sameLine ? "In this static case the two are the same line, so the dashed line runs along the middle of the green band: the Regression Heuristic is exactly the least-squares fit. "
+      : `Here they differ because the Regression Heuristic also includes ${controls} in the regression, while the green band uses price only. `)
+    + `<em>Stated fit</em> (dotted orange) is the linear demand equation the AI model wrote in its reasoning, ${aiLine ? `quoted as “${fittedEscape(aiLine.text)}”` : "which this answer does not contain"}; it is taken from the text only when explicit. `
+    + `<strong>Vertical lines</strong> are prices, labelled above the plot: <em>Optimal price P*</em> (solid red) maximises revenue under the actual demand curve; <em>Regression price</em> (dashed brown) is the price the Regression Heuristic recommends; <em>AI price</em> (dotted orange) is the price the selected AI answer recommends. `
+    + `<strong>Dots</strong> are the price history shown to the models${entry.dataset === "season" ? " (filled weekdays, hollow weekends)" : ""}.${entry.dataset === "duopoly" ? " They were observed at other competitor prices, so they lie off the lines by the competitor effect as well as by noise." : ""} In the table, MSE is the mean squared gap between each curve and the observed demands${entry.dataset === "static" ? "" : ", with each curve evaluated at that period's day type or competitor price"}.</span>`;
+  renderFittedCoverage();
+}
+
+// ---------- Version 10.4: omnibus repeated-measures ANOVA across models ----------
+let selectedAnovaMethods = "all";
+let selectedAnovaScenario = "all";
+let anovaCaseIndex = null;
+
+function anovaCases() {
+  if (anovaCaseIndex) return anovaCaseIndex;
+  const byCase = new Map();
+  payload.rows.forEach(row => {
+    let entry = byCase.get(row.case_key);
+    if (!entry) { entry = { reference: row, losses: {} }; byCase.set(row.case_key, entry); }
+    (entry.losses[row.model] ||= {})[Number(row.run_id)] = row.rel_rev_loss;
+  });
+  anovaCaseIndex = [...byCase.values()];
+  return anovaCaseIndex;
+}
+
+// One row of the table: every method's loss per case, averaged over the listed runs, then the omnibus test.
+function anovaModelsRow(label, methods, runsFor) {
+  const matrix = [];
+  anovaCases().forEach(entry => {
+    if (selectedAnovaScenario !== "all" && entry.reference.scenario_subtype !== selectedAnovaScenario) return;
+    const values = methods.map(method => {
+      if (method === HEURISTIC_LABEL) return entry.reference.heuristic_rel_rev_loss;
+      if (method === REGRESSION_LABEL) {
+        const regression = regressionForRow(entry.reference);
+        return Number.isFinite(regression?.revenue_pct_gap) ? Math.abs(regression.revenue_pct_gap) : NaN;
+      }
+      const runs = runsFor(method);
+      const losses = runs.map(run => entry.losses[method]?.[run]);
+      return losses.every(Number.isFinite) ? mean(losses) : NaN;
+    });
+    if (values.every(Number.isFinite)) matrix.push(values);
+  });
+  const result = equalRunMeansTests(matrix);
+  return `<tr><th>${label}</th><td>${fmtInt(result.n)}</td>${methods.map((_, index) => `<td>${fmtLoss(result.runMeans[index])}</td>`).join("")}`
+    + `<td class="${sigClass(result.anovaP)}">${fmtNum(result.anovaF)}</td><td>${fmtInt(result.anovaDf1)}, ${fmtInt(result.anovaDf2)}</td><td class="${sigClass(result.anovaP)}">${fmtP(result.anovaP)}</td>`
+    + `<td class="${sigClass(result.hotellingP)}">${fmtNum(result.hotellingF)}</td><td>${fmtInt(result.anovaDf1)}, ${fmtInt(result.hotellingDf2)}</td><td class="${sigClass(result.hotellingP)}">${fmtP(result.hotellingP)}</td></tr>`;
+}
+
+function renderAnovaModels() {
+  document.querySelector("#anovaModelsMethods").value = selectedAnovaMethods;
+  document.querySelector("#anovaModelsScenario").value = selectedAnovaScenario;
+  const groups = payload.model_groups || {};
+  const basicModels = payload.models.filter(model => groups[model] === "basic");
+  const advancedModels = payload.models.filter(model => groups[model] === "advanced");
+  const baselines = selectedAnovaMethods === "all" ? [HEURISTIC_LABEL, REGRESSION_LABEL] : [];
+  const basicRuns = (payload.basic_runs || []).map(Number);
+  const advancedRuns = (payload.advanced_runs || []).map(Number);
+  const header = methods => `<tr><th>Runs</th><th>Cases</th>${methods.map(method => `<th>${modelMeta(method).short || method}</th>`).join("")}<th>ANOVA F</th><th>df</th><th>p</th><th>Hotelling F</th><th>df</th><th>p</th></tr>`;
+  const basicMethods = [...basicModels, ...baselines];
+  document.querySelector("#anovaModelsBasicTable thead").innerHTML = header(basicMethods);
+  document.querySelector("#anovaModelsBasicTable tbody").innerHTML = [
+    ...basicRuns.map(run => anovaModelsRow(`Run ${run}`, basicMethods, () => [run])),
+    anovaModelsRow(`All ${basicRuns.length} runs averaged`, basicMethods, () => basicRuns),
+  ].join("");
+  const sharedMethods = [...basicModels, ...advancedModels, ...baselines];
+  const runsBy = (basic, advanced) => method => groups[method] === "advanced" ? advanced : basic;
+  document.querySelector("#anovaModelsSharedTable thead").innerHTML = header(sharedMethods);
+  document.querySelector("#anovaModelsSharedTable tbody").innerHTML = [
+    ...advancedRuns.map(run => anovaModelsRow(`Basic run 1, advanced run ${run}`, sharedMethods, runsBy([1], [run]))),
+    anovaModelsRow("All runs averaged", sharedMethods, runsBy(basicRuns, advancedRuns)),
+  ].join("");
+  const shown = anovaCases().filter(entry => selectedAnovaScenario === "all" || entry.reference.scenario_subtype === selectedAnovaScenario).length;
+  document.querySelector("#caseCount").textContent = fmtInt(shown);
+  document.querySelector("#completeCount").textContent = fmtInt(shown);
+  document.querySelector("#anovaModelsNote").innerHTML = `<strong>H0: all methods have the same mean loss</strong><span>Each row is one repeated-measures ANOVA with the methods as conditions and the matched cases as subjects, so every case is compared with itself. The method columns show mean relative revenue loss. <strong>ANOVA F</strong> is the standard repeated-measures F test; <strong>Hotelling F</strong> tests the same hypothesis without assuming that all pairs of methods are equally correlated. A small p-value means at least one method differs; it does not say which, so the pairwise comparisons stay in the T Tests (Across Models) tab. The Heuristic and the Regression Heuristic have one value per instance and no runs. Failed answers and non-positive regression prices count as a 100% loss.${selectedAnovaMethods === "all" ? " With the heuristics included the test is dominated by the gap between heuristics and AI models; choose AI models only to test the AI models against each other." : ""}</span>`;
+}
+
 // ---------- Version 9.5: Role of Noise tab ----------
 let selectedNoiseScenario = "all";
 
@@ -5098,13 +5349,13 @@ function renderNoiseRole() {
   const instanceCount = pairs.length;
   document.querySelector("#caseCount").textContent = fmtInt(instanceCount);
   document.querySelector("#completeCount").textContent = fmtInt(instanceCount);
-  note.innerHTML = `<strong>${fmtInt(instanceCount)} instance pairs${selectedNoiseScenario === "all" ? "" : ` · ${selectedNoiseScenario}`}</strong><span>An instance pair is the same pricing problem (scenario, demand family, parameter set, history length) observed at noise 0.1 and at noise 0.3. The noise 0.3 version exists twice: the <strong>old</strong> histories (9-30 basic files, 10-01 advanced files, 0930 regression file) had their own prices, while the <strong>new</strong> histories (10-05 files) reuse the noise 0.1 prices and scale the same noise draw by three. Each method's loss is first averaged within the instance (basic models: 8 prompt variants x 5 runs; advanced models: run ${study.advanced_run}, the only run in the old files, on history lengths 5 and 15), then compared across instances with an exact paired t test. Failed answers and non-positive regression prices count as a 100% loss, as elsewhere in the app. The new regression fits are recomputed and should be confirmed by the regression's author.</span>`;
+  note.innerHTML = `<strong>${fmtInt(instanceCount)} instance pairs${selectedNoiseScenario === "all" ? "" : ` · ${selectedNoiseScenario}`}</strong><span>An instance pair is the same pricing problem (scenario, demand family, parameter set, history length) observed at noise 0.1 and at noise 0.3. The noise 0.3 version exists twice: the <strong>old</strong> histories (9-30 basic files, 10-01 advanced files, 0930 regression file) had their own prices, while the <strong>new</strong> histories (10-05 files) reuse the noise 0.1 prices and scale the same noise draw by three. Each method's loss is first averaged within the instance (basic models: 8 prompt variants x 5 runs; advanced models: run ${study.advanced_run}, the only run in the old files, on history lengths 5 and 15), then compared across instances with an exact paired t test. Failed answers and non-positive regression prices count as a 100% loss, as elsewhere in the app. Regression results for the new histories come from the 1004 regression files.</span>`;
   document.querySelector("#noiseEffectNote").innerHTML = `<strong>Noise effect = mean loss at noise 0.3 minus mean loss at noise 0.1</strong><span>A positive effect means the method loses more revenue under higher noise. Both effects use the same noise 0.1 baseline, so the last two columns (new effect minus old effect) repeat the old-versus-new comparison in the next table: the change in the noise effect is exactly the change in the noise 0.3 loss.</span>`;
 }
 
 function render() {
   activateBenchmarkRows();
-  document.querySelector("#benchmarkControls").hidden = selectedTab === "tTestsRuns" || selectedTab === "noiseRole";
+  document.querySelector("#benchmarkControls").hidden = selectedTab === "tTestsRuns" || selectedTab === "noiseRole" || selectedTab === "anovaModels" || selectedTab === "fittedDemand";
   const advanced = selectedTab === "advancedModels";
   document.querySelector("#benchmarkGroupControl").hidden = advanced;
   const basicOverview = selectedTab === "overview";
@@ -5131,6 +5382,8 @@ function render() {
   if (selectedTab === "groundTruth") renderGroundTruth();
   if (selectedTab === "advancedModels") renderOverview();
   if (selectedTab === "noiseRole") renderNoiseRole();
+  if (selectedTab === "anovaModels") renderAnovaModels();
+  if (selectedTab === "fittedDemand") renderFittedDemand();
 
 }
 
@@ -5157,6 +5410,20 @@ document.querySelectorAll(".tab").forEach(button => button.addEventListener("cli
   render();
 }));
 
+[["#fittedInstance", "instance", value => value], ["#fittedModel", "model", value => value], ["#fittedRun", "run", Number], ["#fittedVariant", "variant", value => value]].forEach(([id, field, cast]) => {
+  document.querySelector(id).addEventListener("change", event => {
+    fittedSelection[field] = cast(event.target.value);
+    renderFittedDemand();
+  });
+});
+document.querySelector("#anovaModelsMethods").addEventListener("change", event => {
+  selectedAnovaMethods = event.target.value;
+  renderAnovaModels();
+});
+document.querySelector("#anovaModelsScenario").addEventListener("change", event => {
+  selectedAnovaScenario = event.target.value;
+  renderAnovaModels();
+});
 document.querySelector("#noiseScenario").addEventListener("change", event => {
   selectedNoiseScenario = event.target.value;
   renderNoiseRole();

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=10.3">
+  <link rel="stylesheet" href="styles.css?v=10.8">
 </head>
 <body>
   <header class="topbar">
@@ -25,9 +25,11 @@
       <button class="tab active" data-tab="tests">Tests (Across Models)</button>
       <button class="tab" data-tab="withinTests">Tests (Within Models)</button>
       <button class="tab" data-tab="tTestsAcross">T Tests (Across Models)</button>
+      <button class="tab" data-tab="anovaModels">ANOVA (Across Models)</button>
       <button class="tab" data-tab="tTestsRuns">ANOVA (Across Runs)</button>
       <button class="tab" data-tab="tTestsWithin">T Tests (Within Models)</button>
       <button class="tab" data-tab="groundTruth">Ground Truth Curves</button>
+      <button class="tab" data-tab="fittedDemand">Regression Heuristic Fitted Demands</button>
       <button class="tab" data-tab="advancedModels">Advanced Models</button>
       <button class="tab" data-tab="noiseRole">Role of Noise</button>
     </nav>
@@ -1126,7 +1128,7 @@
       <article class="card chart-card">
         <div class="card-heading">
           <h2>True demand and recommended prices</h2>
-          <span>Ground-truth curve with the optimal price and model estimates</span>
+          <span>Ground-truth curve with the price history, the optimal price and model estimates</span>
         </div>
         <div id="groundTruthChart" class="ground-truth-chart"></div>
       </article>
@@ -1136,6 +1138,16 @@
           <span>Ground-truth revenue curve with the same recommended-price markers</span>
         </div>
         <div id="groundTruthRevenueChart" class="ground-truth-chart"></div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Price history shown to the models</h2>
+          <span>Observed prices and demands for the selected benchmark case</span>
+        </div>
+        <article class="comparison-note" id="groundTruthHistoryNote"></article>
+        <div class="table-wrap">
+          <table id="groundTruthHistoryTable"><thead></thead><tbody></tbody></table>
+        </div>
       </article>
       <article class="card table-card">
         <div class="card-heading">
@@ -1158,6 +1170,96 @@
     </section>
 
 
+
+    <section id="fittedDemand" class="panel">
+      <div class="toolbar card" aria-label="Fitted demand controls">
+        <label>Benchmark instance
+          <select id="fittedInstance"></select>
+        </label>
+        <label>AI model
+          <select id="fittedModel"></select>
+        </label>
+        <label>Run
+          <select id="fittedRun"></select>
+        </label>
+        <label>Prompt variant
+          <select id="fittedVariant"></select>
+        </label>
+      </div>
+      <article class="comparison-note card" id="fittedDemandNote"></article>
+      <article class="card chart-card">
+        <div class="card-heading">
+          <h2>Actual demand, least-squares fit, Regression Heuristic fit and the AI's stated fit</h2>
+          <span>Demand curves over the price history shown to the models</span>
+        </div>
+        <div id="fittedDemandChart" class="ground-truth-chart"></div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Demand lines and the prices they imply</h2>
+          <span>Selected instance, model, run and prompt variant</span>
+        </div>
+        <div class="table-wrap">
+          <table id="fittedDemandTable"><thead><tr><th>Source</th><th>Intercept</th><th>Slope</th><th>MSE on the price history</th><th>Price implied by the line</th><th>Recommended price</th><th>Relative revenue loss</th></tr></thead><tbody></tbody></table>
+        </div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>All stated fits of this model on this instance</h2>
+          <span>Every run and prompt variant whose reasoning states a linear demand equation</span>
+        </div>
+        <div class="table-wrap">
+          <table id="fittedDemandAnswersTable"><thead><tr><th>Run</th><th style="text-align:left">Prompt variant</th><th style="text-align:left">Stated demand (quoted)</th><th>Intercept</th><th>Slope</th><th>Recommended price</th><th>Relative revenue loss</th></tr></thead><tbody></tbody></table>
+        </div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>How often do the models state a linear demand fit?</h2>
+          <span>Share of answers with an explicit linear equation, and how its slope compares with the regression slope</span>
+        </div>
+        <div class="table-wrap">
+          <table id="fittedDemandCoverageTable"><thead><tr><th>Model</th><th>Answers</th><th>Static</th><th>Seasonal</th><th>Duopoly</th><th>All</th><th>Median stated slope / regression slope</th><th>Stated slope within 10% of regression</th></tr></thead><tbody></tbody></table>
+        </div>
+      </article>
+    </section>
+
+    <section id="anovaModels" class="panel">
+      <div class="toolbar card" aria-label="ANOVA across models controls">
+        <label>Methods
+          <select id="anovaModelsMethods">
+            <option value="all">AI models + both heuristics</option>
+            <option value="ai">AI models only</option>
+          </select>
+        </label>
+        <label>Scenario
+          <select id="anovaModelsScenario">
+            <option value="all">All scenarios</option>
+            <option value="static">Static</option>
+            <option value="seasonal">Seasonal</option>
+            <option value="duopoly">Duopoly</option>
+          </select>
+        </label>
+      </div>
+      <article class="comparison-note card" id="anovaModelsNote"></article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Basic models, full grid</h2>
+          <span>Omnibus repeated-measures ANOVA of H0: all methods have the same mean loss, for each run</span>
+        </div>
+        <div class="table-wrap">
+          <table id="anovaModelsBasicTable"><thead></thead><tbody></tbody></table>
+        </div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>Basic and advanced models, shared cases</h2>
+          <span>The same omnibus test on the cases every model was run on</span>
+        </div>
+        <div class="table-wrap">
+          <table id="anovaModelsSharedTable"><thead></thead><tbody></tbody></table>
+        </div>
+      </article>
+    </section>
 
     <section id="noiseRole" class="panel">
       <div class="toolbar card" aria-label="Role of noise controls">
@@ -1212,8 +1314,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Regression fits with a non-positive fitted price and AI rows without a valid answer count as 100% revenue loss; they have no usable price, so price-gap and pricing-direction metrics leave them out. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>10.3</div>
+    <div>10.8</div>
   </footer>
-  <script src="app.js?v=10.3"></script>
+  <script src="app.js?v=10.8"></script>
 </body>
 </html>

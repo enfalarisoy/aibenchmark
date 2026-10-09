@@ -71,7 +71,7 @@ const MODEL_META = {
 const HEURISTIC_LABEL = "Heuristic";
 const REGRESSION_LABEL = "Regression Heuristic";
 const TAB_DESCRIPTIONS = {
-  overview: "Summarizes model performance, leaderboards, loss rates, pricing direction, and static regression diagnostics.",
+  overview: "Summarizes model performance, leaderboards, loss rates, pricing direction, and static regression diagnostics. Version 10.9: the duopoly Heuristic now uses seller 2's own price (the result files used seller 1's price column).",
   tests: "Compares selected models across matched cases using loss, pricing, distribution, and direction results.",
   withinTests: "Shows how each selected model performs when one benchmark input varies and the other inputs are held matched.",
   tTestsAcross: "Runs paired t tests between selected models on the same filtered benchmark cases.",

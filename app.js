@@ -4880,7 +4880,7 @@ function renderWithin() {
   ).join("");
 }
 
-function groundTruthDemand(entry, price, row) {
+function groundTruthDemand(entry, price, row, competitorPrice) {
   const model = entry.model;
   let params = entry.params;
   if (entry.dataset === "season") params = params[row?.next_env] || params.weekday || params.weekend;
@@ -4894,7 +4894,8 @@ function groundTruthDemand(entry, price, row) {
   else if (model === "weibull") demand = params.A * Math.exp(-((price / params.lam) ** params.k));
   else if (model === "empmixlogit") demand = params.N * params.components.reduce((sum, c) => sum + 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, c.a + c.b * price)))), 0) / params.components.length;
   else demand = NaN;
-  if (entry.dataset === "duopoly") demand += entry.c1 * (entry.p1_true - price);
+  // Version 11.0: the competitor effect is added to the unclipped demand, and non-negativity is imposed once.
+  if (entry.dataset === "duopoly") demand += entry.c1 * ((Number.isFinite(competitorPrice) ? competitorPrice : entry.p1_true) - price);
   return Math.max(demand, 0);
 }
 
@@ -4914,13 +4915,13 @@ function renderGroundTruth() {
   const referenceRow = caseRows[0];
   const summaries = models.map(model => {
     const source = caseRows.filter(row => row.model === model && Number.isFinite(row.ai_answer));
-    return { model, price: mean(source.map(row => row.ai_answer)), loss: mean(source.map(row => row.rel_rev_loss)) };
+    return { model, price: mean(source.map(row => row.ai_answer)), loss: mean(source.map(row => row.rel_rev_loss)), answers: source.length };
   });
   const heuristicRows = caseRows.filter(row => Number.isFinite(row.heuristic_price));
-  summaries.push({ model: HEURISTIC_LABEL, price: mean(heuristicRows.map(row => row.heuristic_price)), loss: mean(heuristicRows.map(row => row.heuristic_rel_rev_loss)) });
+  summaries.push({ model: HEURISTIC_LABEL, price: mean(heuristicRows.map(row => row.heuristic_price)), loss: mean(heuristicRows.map(row => row.heuristic_rel_rev_loss)), answers: 1 });
   const regression = regressionForRow(referenceRow);
   if (regressionPriceUsable(regression)) {
-    summaries.push({ model: REGRESSION_LABEL, price: regression.p_hat, loss: Math.abs(regression.revenue_pct_gap) });
+    summaries.push({ model: REGRESSION_LABEL, price: regression.p_hat, loss: Math.abs(regression.revenue_pct_gap), answers: 1 });
   }
   const revenueAt = price => price * groundTruthDemand(entry, price, referenceRow);
   const revenueAtOptimalPrice = revenueAt(entry.p_star);
@@ -4981,7 +4982,9 @@ function renderGroundTruth() {
   document.querySelector("#groundTruthHistoryNote").innerHTML = history.length
     ? `<strong>${fmtInt(history.length)} observed periods</strong><span>Dots show the price history given to the models, read from the prompts in the 10-05 result files.${entry.dataset === "season" ? " Filled dots are weekdays and hollow dots are weekends; the curve is the demand for the next period's day type, so the other day type's dots lie off it." : ""}${entry.dataset === "duopoly" ? " Each observation was generated at that period's competitor price, while the curve fixes the competitor at the current price, so dots lie off the curve by the competitor effect as well as by noise." : " Vertical distance from the curve is the demand noise."} Hover over a dot for its values.</span>`
     : `<strong>No price history</strong><span>This instance is not part of the 10-05 benchmark.</span>`;
-  document.querySelector("#groundTruthEstimateTable tbody").innerHTML = summaries.map(item => `<tr><th>${modelMeta(item.model).short}</th><td>${item.price.toFixed(2)}</td><td>${(item.price - entry.p_star).toFixed(2)}</td><td>${fmtNum(item.revenue)}</td><td>${fmtPct(item.revenueGap)}</td><td>${fmtLoss(item.loss)}</td></tr>`).join("");
+  // Version 11.0: "loss at the mean price" evaluates the averaged price as one recommendation; "mean loss across
+  // answers" averages each answer's own loss. They coincide only when a method gives a single price.
+  document.querySelector("#groundTruthEstimateTable tbody").innerHTML = summaries.map(item => `<tr><th>${modelMeta(item.model).short}</th><td>${fmtInt(item.answers)}</td><td>${item.price.toFixed(2)}</td><td>${(item.price - entry.p_star).toFixed(2)}</td><td>${fmtNum(item.revenue)}</td><td>${fmtLoss(Math.min(1, Math.max(0, -item.revenueGap)))}</td><td>${fmtLoss(item.loss)}</td></tr>`).join("");
 }
 
 
@@ -5204,15 +5207,17 @@ function renderFittedDemand() {
   const num = value => Number.isFinite(value) ? fmtNum(value) : "-";
   const price2 = value => Number.isFinite(value) ? value.toFixed(2) : "-";
   // Mean squared error of each curve against the plotted observations.
-  const mse = predict => history.length ? mean(history.map(record => (record.demand - predict(record)) ** 2)) : NaN;
-  const truthAt = record => {
-    const base = groundTruthDemand(entry, ownPrice(record), { next_env: record.env });
-    return entry.dataset === "duopoly" ? Math.max(base + entry.c1 * (record.p1 - entry.p1_true), 0) : base;
-  };
+  // Version 11.0: every curve is evaluated on the same observations. In the seasonal scenario these are the
+  // observations from the next period's day type (weekday), because the AI line describes that day type only.
+  const nextEnv = row.next_env || "weekday";
+  const evalSet = entry.dataset === "season" ? history.filter(record => record.env === nextEnv) : history;
+  const mse = predict => evalSet.length ? mean(evalSet.map(record => (record.demand - predict(record)) ** 2)) : NaN;
+  const truthAt = record => groundTruthDemand(entry, ownPrice(record), { next_env: record.env }, entry.dataset === "duopoly" ? record.p1 : undefined);
   const heuristicAt = record => regression.a_intercept + regression.b_slope * ownPrice(record)
     + (entry.dataset === "season" ? (regression.c_slope || 0) * (record.env === "weekend" ? 1 : 0) : entry.dataset === "duopoly" ? (regression.c_slope || 0) * record.p1 : 0);
-  const aiMse = !aiLine || entry.dataset === "duopoly" ? NaN
-    : (() => { const used = history.filter(record => entry.dataset !== "season" || record.env === (row.next_env || "weekday")); return used.length ? mean(used.map(record => (record.demand - (aiLine.a + aiLine.b * ownPrice(record))) ** 2)) : NaN; })();
+  // The AI line holds the competitor at its current price, so it has no MSE on duopoly observations made at other competitor prices.
+  const aiMse = !aiLine || entry.dataset === "duopoly" ? NaN : mse(record => aiLine.a + aiLine.b * ownPrice(record));
+  document.querySelector("#fittedDemandTable thead").innerHTML = `<tr><th>Source</th><th>Intercept</th><th>Slope</th><th>MSE on ${fmtInt(evalSet.length)} ${entry.dataset === "season" ? `${nextEnv} ` : ""}observations</th><th>Price implied by the line</th><th>Recommended price</th><th>Relative revenue loss</th></tr>`;
   document.querySelector("#fittedDemandTable tbody").innerHTML =
     `<tr><th>Actual (true) demand, ${displayLevel(entry.model)}</th><td>-</td><td>-</td><td>${num(mse(truthAt))}</td><td>-</td><td>${price2(entry.p_star)} (P*)</td><td>${fmtLoss(0)}</td></tr>`
     + `<tr><th>Least-squares fit to the dots (price only)</th><td>${num(lsLine?.a)}</td><td>${num(lsLine?.b)}</td><td>${lsLine ? num(mse(record => lsLine.a + lsLine.b * ownPrice(record))) : "-"}</td><td>${price2(implied(lsLine))}</td><td>-</td><td>-</td></tr>`
@@ -5231,7 +5236,7 @@ function renderFittedDemand() {
       : `Here they differ because the Regression Heuristic also includes ${controls} in the regression, while the green band uses price only. `)
     + `<em>Stated fit</em> (dotted orange) is the linear demand equation the AI model wrote in its reasoning, ${aiLine ? `quoted as “${fittedEscape(aiLine.text)}”` : "which this answer does not contain"}; it is taken from the text only when explicit. `
     + `<strong>Vertical lines</strong> are prices, labelled above the plot: <em>Optimal price P*</em> (solid red) maximises revenue under the actual demand curve; <em>Regression price</em> (dashed brown) is the price the Regression Heuristic recommends; <em>AI price</em> (dotted orange) is the price the selected AI answer recommends. `
-    + `<strong>Dots</strong> are the price history shown to the models${entry.dataset === "season" ? " (filled weekdays, hollow weekends)" : ""}.${entry.dataset === "duopoly" ? " They were observed at other competitor prices, so they lie off the lines by the competitor effect as well as by noise." : ""} In the table, MSE is the mean squared gap between each curve and the observed demands${entry.dataset === "static" ? "" : ", with each curve evaluated at that period's day type or competitor price"}.</span>`;
+    + `<strong>Dots</strong> are the price history shown to the models${entry.dataset === "season" ? " (filled weekdays, hollow weekends)" : ""}.${entry.dataset === "duopoly" ? " They were observed at other competitor prices, so they lie off the lines by the competitor effect as well as by noise." : ""} In the table, MSE is the mean squared gap between each curve and the observed demands, computed for every curve on the same observations${entry.dataset === "season" ? ": the observations from the next period's day type only, since the AI line and the P* curve describe that day type" : entry.dataset === "duopoly" ? ", with each curve evaluated at that period's competitor price; the AI line has no MSE here because it fixes the competitor at the current price" : ""}.</span>`;
   renderFittedCoverage();
 }
 

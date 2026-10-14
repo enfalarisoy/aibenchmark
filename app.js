@@ -330,13 +330,21 @@ function regressionIsEligible(item) {
 
 // Version 8.5: a non-positive fitted price counts as a 100% revenue loss,
 // but the price itself is not a usable price for price-gap or direction metrics.
+// Version 11.1: an upward-sloping fitted demand line is a failed fit as well (its formula price is a revenue minimum).
+function regressionFitFailed(item) {
+  return item?.fit_status === "negative_price" || item?.fit_status === "upward_slope";
+}
+
 function regressionPriceUsable(item) {
-  return regressionIsEligible(item) && item?.fit_status !== "negative_price" && Number.isFinite(item?.p_hat);
+  return regressionIsEligible(item) && !regressionFitFailed(item) && Number.isFinite(item?.p_hat);
 }
 
 function regressionStatus(item) {
   if (item?.fit_status === "negative_price") {
     return `<span class="regression-status" title="${item.fit_status_reason || ""}">Negative price: 100% loss</span>`;
+  }
+  if (item?.fit_status === "upward_slope") {
+    return `<span class="regression-status" title="${item.fit_status_reason || ""}">Upward slope: 100% loss</span>`;
   }
   return regressionIsEligible(item)
     ? ""
@@ -4192,22 +4200,22 @@ function renderOverview() {
 
   const meanRSquared = mean(eligibleRegressionItems.map(item => item.r_squared).filter(Number.isFinite));
   const meanAbsPriceGap = mean(eligibleRegressionItems.filter(regressionPriceUsable).map(item => Math.abs(item.price_pct_gap)).filter(Number.isFinite));
-  const negativePriceRegressionItems = regressionItems.filter(item => item.fit_status === "negative_price");
+  const negativePriceRegressionItems = regressionItems.filter(regressionFitFailed);
   const meanAbsRevenueGap = mean(eligibleRegressionItems.map(item => Math.abs(item.revenue_pct_gap)).filter(Number.isFinite));
   if (regressionNoteEl) {
     regressionNoteEl.innerHTML = regressionItems.length
-      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum. Regression results come from the 1004 regression files for the 10-05 price histories.${negativePriceRegressionItems.length ? ` <strong>${fmtInt(negativePriceRegressionItems.length)} fits with a non-positive fitted price count as 100% revenue loss</strong>; their price gaps are shown as n/a.` : ""}${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
+      ? `<strong>${fmtInt(regressionItems.length)} filtered static instances with regression diagnostics</strong><span>${activeFilters.length ? activeFilters.join(" · ") : "All overview filters selected"}. Regression diagnostics are available only for <strong>static</strong> cases and summarize the underlying benchmark instances rather than any model's answer. Absolute percentage gaps compare the regression fit against the benchmark optimum. Regression results come from the 1004 regression files for the 10-05 price histories.${negativePriceRegressionItems.length ? ` <strong>${fmtInt(negativePriceRegressionItems.length)} failed fits (non-positive fitted price or upward-sloping demand line) count as 100% revenue loss</strong>; their price gaps are shown as n/a.` : ""}${infeasibleRegressionItems.length ? ` <strong>${fmtInt(infeasibleRegressionItems.length)} infeasible fit is shown below but excluded from averages and leaderboards.</strong>` : ""}</span>`
       : `<strong>No static regression diagnostics for the current filters</strong><span>Regression diagnostics are only available for the <strong>static</strong> instances. Try including static in the scenario filter or relaxing the current overview filters.</span>`;
     if (!showRegression) {
-      regressionNoteEl.innerHTML = `<strong>${fmtInt(regressionItems.length)} static regression instances match the filters</strong><span>No eligible shared regression comparison is available for this selection. Matching requires the same scenario and instance ID, including noise level. Non-positive fitted prices count as 100% revenue loss.</span>`;
+      regressionNoteEl.innerHTML = `<strong>${fmtInt(regressionItems.length)} static regression instances match the filters</strong><span>No eligible shared regression comparison is available for this selection. Matching requires the same scenario and instance ID, including noise level. Non-positive fitted prices and upward-sloping fitted demand lines count as 100% revenue loss.</span>`;
     }
   }
 
   if (regressionKpisEl) {
     regressionKpisEl.innerHTML = [
-      kpi("Static instances", fmtInt(eligibleRegressionItems.length), `${fmtInt(regressionTotal)} total static instances have regression output${negativePriceRegressionItems.length ? `; ${fmtInt(negativePriceRegressionItems.length)} negative-price fits count as 100% loss` : ""}${infeasibleRegressionItems.length ? `; ${fmtInt(infeasibleRegressionItems.length)} infeasible fit excluded` : ""}`),
+      kpi("Static instances", fmtInt(eligibleRegressionItems.length), `${fmtInt(regressionTotal)} total static instances have regression output${negativePriceRegressionItems.length ? `; ${fmtInt(negativePriceRegressionItems.length)} failed fits (negative price or upward slope) count as 100% loss` : ""}${infeasibleRegressionItems.length ? `; ${fmtInt(infeasibleRegressionItems.length)} infeasible fit excluded` : ""}`),
       kpi("Mean R²", fmtNum(meanRSquared), "Higher indicates a tighter linear fit on the sampled price-demand points"),
-      kpi("Mean |price gap|", fmtPct(meanAbsPriceGap), "Absolute percent gap between fitted price and optimal price; negative fitted prices are excluded"),
+      kpi("Mean |price gap|", fmtPct(meanAbsPriceGap), "Absolute percent gap between fitted price and optimal price; failed fits are excluded"),
       kpi("Mean |revenue gap|", fmtPct(meanAbsRevenueGap), "Absolute percent gap between fitted revenue and optimal revenue"),
     ].join("");
   }
@@ -4994,7 +5002,7 @@ function renderAdvancedCaseTable(cases, completed) {
   const aiMethods = models;
   const methods = [...aiMethods, HEURISTIC_LABEL, REGRESSION_LABEL];
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
-  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The overview above compares the ${aiMethods.length} AI models, Heuristic, and Regression Heuristic on the cases the advanced and basic models share (same instance, noise level, price history and prompt variant; 96 per scenario). Basic models use ${basicRunDescription()}; advanced models use ${advancedRunDescription()}. Rows without a valid answer and regression fits with a non-positive price count as 100% revenue loss and have no price.</span>`;
+  document.querySelector("#advancedModelsNote").innerHTML = `<strong>${fmtInt(cases.length)} shared input cases; ${fmtInt(completed.length)} complete AI cases</strong><span>The overview above compares the ${aiMethods.length} AI models, Heuristic, and Regression Heuristic on the cases the advanced and basic models share (same instance, noise level, price history and prompt variant; 96 per scenario). Basic models use ${basicRunDescription()}; advanced models use ${advancedRunDescription()}. Rows without a valid answer and regression fits with a non-positive price or an upward-sloping demand line count as 100% revenue loss and have no price.</span>`;
   document.querySelector("#advancedModelsCases thead").innerHTML = `<tr><th>Case / matching inputs</th><th>Scenario</th><th>Demand model</th><th>P*</th>${methods.map(model => `<th>${escape(model)}<br><span class="quiet">Price / loss</span></th>`).join("")}</tr>`;
   document.querySelector("#advancedModelsCases tbody").innerHTML = cases.map(entry => {
     const row = entry[methods[0]];
@@ -5008,7 +5016,7 @@ function renderAdvancedCaseTable(cases, completed) {
         return `<td>${fmtNum(fit?.p_hat)}<br><span class="quiet">${fit?.fit_status === "infeasible" ? "Infeasible: excluded" : "Unavailable"}</span></td>`;
       }
       if (result.answer_failed) return `<td><span class="quiet">No valid answer</span><br>${fmtLoss(result.rel_rev_loss)}</td>`;
-      if (model === REGRESSION_LABEL && !Number.isFinite(result.ai_answer)) return `<td><span class="quiet">Negative price</span><br>${fmtLoss(result.rel_rev_loss)}</td>`;
+      if (model === REGRESSION_LABEL && !Number.isFinite(result.ai_answer)) return `<td><span class="quiet">Failed fit</span><br>${fmtLoss(result.rel_rev_loss)}</td>`;
       return `<td>${fmtNum(result.ai_answer)}<br>${result.answered ? fmtLoss(result.rel_rev_loss) : '<span class="quiet">Incomplete answer</span>'}</td>`;
     }).join("");
     return `<tr><th><details><summary>${escape(row.instance_id)}${complete ? "" : " (incomplete)"}</summary>${inputs}</details></th><td>${escape(displayLevel(row.scenario_subtype))}</td><td>${escape(displayLevel(row.demand_model))}</td><td>${fmtNum(row.p_star)}</td>${cells}</tr>`;
@@ -5068,7 +5076,7 @@ function renderAllRuns() {
     medianLoss: medianFinite(complete.map(entry => entry.averages[model].meanLoss)),
     priceCount: complete.filter(entry => Number.isFinite(entry.averages[model].signedGap)).length,
   }));
-  document.querySelector("#allRunsNote").innerHTML = `<strong>${fmtInt(complete.length)} complete shared cases across all ${runIds.length} runs</strong><span>${fmtInt(filtered.length)} input cases match the filters; ${fmtInt(filtered.length - complete.length)} cases are excluded because a benchmark lacks a valid loss or positive P*. First, each metric is averaged across five runs within a case, then across cases with equal weights. Revenue losses are averaged as supplied, not recomputed at the average price. Absolute price gaps are calculated before averaging. Positive signed gaps mean overpricing. Heuristic and Regression Heuristic are fixed benchmarks, counted once per case. All five methods use the same cases. AI answers without a valid price and regression fits with a non-positive fitted price count as 100% revenue loss; because they have no usable price, they are left out of the price-gap columns only (a model's case-level price gap needs a valid price in all five runs).</span>`;
+  document.querySelector("#allRunsNote").innerHTML = `<strong>${fmtInt(complete.length)} complete shared cases across all ${runIds.length} runs</strong><span>${fmtInt(filtered.length)} input cases match the filters; ${fmtInt(filtered.length - complete.length)} cases are excluded because a benchmark lacks a valid loss or positive P*. First, each metric is averaged across five runs within a case, then across cases with equal weights. Revenue losses are averaged as supplied, not recomputed at the average price. Absolute price gaps are calculated before averaging. Positive signed gaps mean overpricing. Heuristic and Regression Heuristic are fixed benchmarks, counted once per case. All five methods use the same cases. AI answers without a valid price and regression fits with a non-positive fitted price or an upward-sloping demand line count as 100% revenue loss; because they have no usable price, they are left out of the price-gap columns only (a model's case-level price gap needs a valid price in all five runs).</span>`;
   document.querySelector("#allRunsLossChart").innerHTML = renderAcrossMeanChart(summaries, {width: 960});
   document.querySelector("#allRunsPriceChart").innerHTML = renderAcrossMeanChart(summaries.map(item => ({...item, meanLoss: item.absoluteRelativeGap})), {width: 960, axisTitle: "Mean absolute relative price gap"});
   document.querySelector("#allRunsSummary tbody").innerHTML = summaries.map(item => `<tr><th>${item.model}</th><td>${fmtInt(complete.length)}</td><td>${baselines.includes(item.model) ? "1 (fixed)" : runIds.length}</td><td>${fmtLoss(item.meanLoss)}</td><td>${fmtLoss(item.medianLoss)}</td><td>${fmtNum(item.signedGap)}${item.priceCount < complete.length ? `<br><span class="quiet">n = ${fmtInt(item.priceCount)}</span>` : ""}</td><td>${fmtNum(item.absoluteGap)}</td><td>${fmtSignedLoss(item.signedRelativeGap)}</td><td>${fmtPct(item.absoluteRelativeGap)}</td></tr>`).join("");
@@ -5306,7 +5314,7 @@ function renderAnovaModels() {
   const shown = anovaCases().filter(entry => selectedAnovaScenario === "all" || entry.reference.scenario_subtype === selectedAnovaScenario).length;
   document.querySelector("#caseCount").textContent = fmtInt(shown);
   document.querySelector("#completeCount").textContent = fmtInt(shown);
-  document.querySelector("#anovaModelsNote").innerHTML = `<strong>H0: all methods have the same mean loss</strong><span>Each row is one repeated-measures ANOVA with the methods as conditions and the matched cases as subjects, so every case is compared with itself. The method columns show mean relative revenue loss. <strong>ANOVA F</strong> is the standard repeated-measures F test; <strong>Hotelling F</strong> tests the same hypothesis without assuming that all pairs of methods are equally correlated. A small p-value means at least one method differs; it does not say which, so the pairwise comparisons stay in the T Tests (Across Models) tab. The Heuristic and the Regression Heuristic have one value per instance and no runs. Failed answers and non-positive regression prices count as a 100% loss.${selectedAnovaMethods === "all" ? " With the heuristics included the test is dominated by the gap between heuristics and AI models; choose AI models only to test the AI models against each other." : ""}</span>`;
+  document.querySelector("#anovaModelsNote").innerHTML = `<strong>H0: all methods have the same mean loss</strong><span>Each row is one repeated-measures ANOVA with the methods as conditions and the matched cases as subjects, so every case is compared with itself. The method columns show mean relative revenue loss. <strong>ANOVA F</strong> is the standard repeated-measures F test; <strong>Hotelling F</strong> tests the same hypothesis without assuming that all pairs of methods are equally correlated. A small p-value means at least one method differs; it does not say which, so the pairwise comparisons stay in the T Tests (Across Models) tab. The Heuristic and the Regression Heuristic have one value per instance and no runs. Failed answers and non-positive or upward-sloping regression fits count as a 100% loss.${selectedAnovaMethods === "all" ? " With the heuristics included the test is dominated by the gap between heuristics and AI models; choose AI models only to test the AI models against each other." : ""}</span>`;
 }
 
 // ---------- Version 9.5: Role of Noise tab ----------
@@ -5354,7 +5362,7 @@ function renderNoiseRole() {
   const instanceCount = pairs.length;
   document.querySelector("#caseCount").textContent = fmtInt(instanceCount);
   document.querySelector("#completeCount").textContent = fmtInt(instanceCount);
-  note.innerHTML = `<strong>${fmtInt(instanceCount)} instance pairs${selectedNoiseScenario === "all" ? "" : ` · ${selectedNoiseScenario}`}</strong><span>An instance pair is the same pricing problem (scenario, demand family, parameter set, history length) observed at noise 0.1 and at noise 0.3. The noise 0.3 version exists twice: the <strong>old</strong> histories (9-30 basic files, 10-01 advanced files, 0930 regression file) had their own prices, while the <strong>new</strong> histories (10-05 files) reuse the noise 0.1 prices and scale the same noise draw by three. Each method's loss is first averaged within the instance (basic models: 8 prompt variants x 5 runs; advanced models: run ${study.advanced_run}, the only run in the old files, on history lengths 5 and 15), then compared across instances with an exact paired t test. Failed answers and non-positive regression prices count as a 100% loss, as elsewhere in the app. Regression results for the new histories come from the 1004 regression files.</span>`;
+  note.innerHTML = `<strong>${fmtInt(instanceCount)} instance pairs${selectedNoiseScenario === "all" ? "" : ` · ${selectedNoiseScenario}`}</strong><span>An instance pair is the same pricing problem (scenario, demand family, parameter set, history length) observed at noise 0.1 and at noise 0.3. The noise 0.3 version exists twice: the <strong>old</strong> histories (9-30 basic files, 10-01 advanced files, 0930 regression file) had their own prices, while the <strong>new</strong> histories (10-05 files) reuse the noise 0.1 prices and scale the same noise draw by three. Each method's loss is first averaged within the instance (basic models: 8 prompt variants x 5 runs; advanced models: run ${study.advanced_run}, the only run in the old files, on history lengths 5 and 15), then compared across instances with an exact paired t test. Failed answers and non-positive or upward-sloping regression fits count as a 100% loss, as elsewhere in the app. Regression results for the new histories come from the 1004 regression files.</span>`;
   document.querySelector("#noiseEffectNote").innerHTML = `<strong>Noise effect = mean loss at noise 0.3 minus mean loss at noise 0.1</strong><span>A positive effect means the method loses more revenue under higher noise. Both effects use the same noise 0.1 baseline, so the last two columns (new effect minus old effect) repeat the old-versus-new comparison in the next table: the change in the noise effect is exactly the change in the noise 0.3 loss.</span>`;
 }
 

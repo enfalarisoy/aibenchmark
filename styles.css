@@ -1254,3 +1254,22 @@ footer {
     grid-template-columns: 108px minmax(80px, 1fr) 62px;
   }
 }
+
+/* Version 11.2: Segment Comparison tab */
+.segment-filters { display: flex; flex-wrap: wrap; gap: 14px 24px; padding: 14px 18px; }
+.segment-filter { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.segment-filter legend { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 0 4px; width: 100%; }
+.segment-filter label { font-size: 13px; display: inline-flex; gap: 5px; align-items: center; text-transform: none; letter-spacing: normal; font-weight: 400; color: var(--ink); }
+.segment-legend { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 4px 18px 0; font-size: 13px; }
+.segment-key { display: inline-flex; align-items: center; gap: 6px; }
+.segment-chart-wrap { overflow-x: auto; padding: 0 12px 12px; }
+.segment-svg { width: 100%; min-width: 760px; height: auto; display: block; font-family: inherit; }
+.segment-label { font-size: 14px; fill: var(--ink); }
+.segment-sub { font-size: 11px; fill: var(--muted); }
+.segment-tick { font-size: 12px; fill: var(--muted); }
+.segment-axis { font-size: 13px; fill: var(--ink); }
+.segment-colhead { font-size: 12px; fill: var(--muted); }
+.segment-none { font-size: 14px; fill: var(--muted); }
+.segment-off { font-size: 12px; }
+#segmentTable td, #segmentHeuristicTable td { font-variant-numeric: tabular-nums; }
+.segment-sig { font-weight: 700; color: #b4231c; }

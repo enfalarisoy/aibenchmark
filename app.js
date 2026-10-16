@@ -82,6 +82,7 @@ const TAB_DESCRIPTIONS = {
   anovaModels: "Omnibus repeated-measures ANOVA across models: tests whether all methods share one mean loss on the same cases, run by run.",
   noiseRole: "Compares each method's loss at noise 0.1, at the old noise 0.3 price histories and at the new (10-05) noise 0.3 histories, paired by instance.",
   advancedModels: "Compares the advanced and basic models on their shared cases; choose an advanced-model run or the average of both.",
+  segmentCompare: "Compares each LLM and both heuristics within segments of the benchmark, and marks the clear best and clear worst LLM in each segment (significantly better or worse than both other LLMs).",
 };
 let ACROSS_CHART_ORDER = [];
 const PRICE_DIRECTION_TOLERANCE = 0.05;
@@ -5368,7 +5369,7 @@ function renderNoiseRole() {
 
 function render() {
   activateBenchmarkRows();
-  document.querySelector("#benchmarkControls").hidden = selectedTab === "tTestsRuns" || selectedTab === "noiseRole" || selectedTab === "anovaModels" || selectedTab === "fittedDemand";
+  document.querySelector("#benchmarkControls").hidden = selectedTab === "tTestsRuns" || selectedTab === "noiseRole" || selectedTab === "segmentCompare" || selectedTab === "anovaModels" || selectedTab === "fittedDemand";
   const advanced = selectedTab === "advancedModels";
   document.querySelector("#benchmarkGroupControl").hidden = advanced;
   const basicOverview = selectedTab === "overview";
@@ -5395,6 +5396,7 @@ function render() {
   if (selectedTab === "groundTruth") renderGroundTruth();
   if (selectedTab === "advancedModels") renderOverview();
   if (selectedTab === "noiseRole") renderNoiseRole();
+  if (selectedTab === "segmentCompare") renderSegmentCompare();
   if (selectedTab === "anovaModels") renderAnovaModels();
   if (selectedTab === "fittedDemand") renderFittedDemand();
 
@@ -5801,3 +5803,232 @@ loadPayload()
         ${launchHint}
       </article>`;
   });
+
+// ---------- Version 11.2: Segment Comparison tab ----------
+// Mean loss of each LLM and of both heuristics in segments of the benchmark, with "clear best" and
+// "clear worst" LLMs: an LLM whose mean loss is significantly lower (higher) than both other LLMs.
+// Tests: paired t tests on case-level losses (each case averaged over its runs), standard errors
+// clustered by price history (the two noise levels of an instance share one history), t with G - 1 df.
+const SEGMENT_STYLE = {
+  "Claude Haiku 4.5": { shape: "circle", color: "#3b78d8" },
+  "GPT-5 mini": { shape: "square", color: "#e0729b" },
+  "Gemini 2.5 Flash": { shape: "diamond", color: "#1f8a34" },
+  "Claude Fable 5.1": { shape: "circle", color: "#3b78d8" },
+  "GPT-6 Astra": { shape: "square", color: "#e0729b" },
+  "Gemini 3.1 Pro Preview": { shape: "diamond", color: "#1f8a34" },
+};
+const SEGMENT_BEST_OBSERVED_COLOR = "#16191b";
+const SEGMENT_REGRESSION_COLOR = "#e9a020";
+const SEGMENT_FAMILY_LABELS = {
+  linear: "Linear", exponential: "Exponential", logistic: "Logistic", log_log_capped: "Capped log-log",
+  weibull: "Weibull", empmixlogit: "Empirical mixed logit", piecewise_linear: "Piecewise linear", piecewise_exponential: "Piecewise exponential",
+};
+const SEGMENT_DIMENSIONS = {
+  environment: { label: "Environment", value: r => r.scenario_subtype, levels: ["static", "seasonal", "duopoly"], name: v => ({ static: "Static", seasonal: "Seasonal", duopoly: "Duopoly" })[v] },
+  familyType: { label: "Family type", value: r => String(r.demand_model).startsWith("piecewise") ? "piecewise" : "nonpiecewise", levels: ["nonpiecewise", "piecewise"], name: v => v === "piecewise" ? "Piecewise families" : "Non-piecewise families" },
+  family: { label: "Demand family", value: r => r.demand_model, levels: Object.keys(SEGMENT_FAMILY_LABELS), name: v => SEGMENT_FAMILY_LABELS[v] || v },
+  history: { label: "History length", value: r => r.history_term, levels: ["short_term", "medium_term", "long_term"], name: v => ({ short_term: "Short history", medium_term: "Medium history", long_term: "Long history" })[v] || v },
+  noise: { label: "Noise level", value: r => String(r.sigma), levels: ["0.1", "0.3"], name: v => `σ = ${v}` },
+  paramSet: { label: "Parameter set", value: r => r.parameter_set, levels: ["a", "b", "c"], name: v => `Parameter set ${v}` },
+  role: { label: "Expert role", value: r => r.role ? "yes" : "no", levels: ["no", "yes"], name: v => v === "yes" ? "Expert role" : "No expert role" },
+  context: { label: "Product context", value: r => r.product_context === "luxury" ? "luxury" : "none", levels: ["none", "luxury"], name: v => v === "luxury" ? "Luxury context" : "No product context" },
+  hint: { label: "Distribution hint", value: r => r.dist_hint && r.dist_hint !== "none" ? "hint" : "none", levels: ["none", "hint"], name: v => v === "hint" ? "Distribution hint" : "No distribution hint" },
+};
+const SEGMENT_FILTER_DIMENSIONS = ["environment", "family", "history", "noise"];
+const segmentState = { tier: "basic", rowsBy: "environment", splitBy: "familyType", alpha: 0.05, filters: {} };
+const segmentCaseCache = new Map();
+
+function segmentModels(tier) {
+  const rank = model => model.startsWith("Claude") ? 0 : model.startsWith("GPT") ? 1 : 2;
+  return (payload.models || []).filter(model => payload.model_groups?.[model] === tier).sort((a, b) => rank(a) - rank(b));
+}
+
+function segmentCases(tier) {
+  if (segmentCaseCache.has(tier)) return segmentCaseCache.get(tier);
+  const methods = segmentModels(tier);
+  const byCase = new Map();
+  for (const row of payload.rows) {
+    if (!methods.includes(row.model)) continue;
+    let item = byCase.get(row.case_key);
+    if (!item) {
+      const regression = regressionForRow(row);
+      item = {
+        row,
+        sums: {}, counts: {},
+        bestObserved: Number.isFinite(row.heuristic_rel_rev_loss) ? row.heuristic_rel_rev_loss : NaN,
+        regression: regression && regression.fit_status !== "infeasible" && Number.isFinite(regression.revenue_pct_gap) ? Math.abs(regression.revenue_pct_gap) : NaN,
+        cluster: `${row.scenario_subtype}/${String(row.instance_id).replace(/_s(10|30)$/, "")}`,
+      };
+      byCase.set(row.case_key, item);
+    }
+    const loss = Number.isFinite(row.rel_rev_loss) ? Math.min(row.rel_rev_loss, 1) : 1;
+    item.sums[row.model] = (item.sums[row.model] || 0) + loss;
+    item.counts[row.model] = (item.counts[row.model] || 0) + 1;
+  }
+  const cases = [...byCase.values()]
+    .filter(item => methods.every(model => item.counts[model]))
+    .map(item => ({ ...item, loss: Object.fromEntries(methods.map(model => [model, item.sums[model] / item.counts[model]])) }));
+  segmentCaseCache.set(tier, cases);
+  return cases;
+}
+
+// Paired difference a - b with cluster-robust (CR1) standard errors and t(G - 1).
+function segmentPairedTest(cases, lossA, lossB) {
+  const diffs = [], clusters = new Map();
+  for (const item of cases) {
+    const a = lossA(item), b = lossB(item);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+    diffs.push({ d: a - b, c: item.cluster });
+  }
+  const n = diffs.length;
+  if (n < 2) return { n, diff: NaN, se: NaN, p: NaN, clusters: 0 };
+  const avg = diffs.reduce((s, x) => s + x.d, 0) / n;
+  diffs.forEach(x => clusters.set(x.c, (clusters.get(x.c) || 0) + (x.d - avg)));
+  const g = clusters.size;
+  if (g < 2) return { n, diff: avg, se: NaN, p: NaN, clusters: g };
+  let sumSq = 0;
+  clusters.forEach(v => { sumSq += v * v; });
+  const se = Math.sqrt(g / (g - 1) * sumSq) / n;
+  const t = se > 0 ? avg / se : NaN;
+  return { n, diff: avg, se, p: se > 0 ? fDistributionUpperTail(t * t, 1, g - 1) : (avg === 0 ? 1 : NaN), clusters: g };
+}
+
+function segmentSummaries() {
+  const tier = segmentState.tier;
+  const methods = segmentModels(tier);
+  const cases = segmentCases(tier).filter(item => SEGMENT_FILTER_DIMENSIONS.every(dim => {
+    const allowed = segmentState.filters[dim];
+    return !allowed || allowed.has(SEGMENT_DIMENSIONS[dim].value(item.row));
+  }));
+  const rowDim = SEGMENT_DIMENSIONS[segmentState.rowsBy];
+  const splitDim = segmentState.splitBy !== "none" && segmentState.splitBy !== segmentState.rowsBy ? SEGMENT_DIMENSIONS[segmentState.splitBy] : null;
+  const groups = new Map();
+  cases.forEach(item => {
+    const key = [rowDim.value(item.row), splitDim ? splitDim.value(item.row) : ""].join("|");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  const order = (dim, v) => { const i = dim.levels.indexOf(v); return i < 0 ? 999 : i; };
+  const keys = [...groups.keys()].sort((x, y) => {
+    const [a1, a2] = x.split("|"), [b1, b2] = y.split("|");
+    return order(rowDim, a1) - order(rowDim, b1) || (splitDim ? order(splitDim, a2) - order(splitDim, b2) : 0);
+  });
+  return { methods, total: cases.length, items: keys.map(key => {
+    const [v1, v2] = key.split("|");
+    const group = groups.get(key);
+    const means = Object.fromEntries(methods.map(model => [model, mean(group.map(item => item.loss[model]))]));
+    const bestObserved = mean(group.map(item => item.bestObserved).filter(Number.isFinite));
+    const regression = mean(group.map(item => item.regression).filter(Number.isFinite));
+    const pairs = [];
+    for (let i = 0; i < methods.length; i += 1) for (let j = i + 1; j < methods.length; j += 1) {
+      pairs.push({ a: methods[i], b: methods[j], ...segmentPairedTest(group, item => item.loss[methods[i]], item => item.loss[methods[j]]) });
+    }
+    const pairFor = (a, b) => pairs.find(p => (p.a === a && p.b === b) || (p.a === b && p.b === a));
+    const signedDiff = (a, b) => { const p = pairFor(a, b); return p.a === a ? p.diff : -p.diff; };
+    const significantly = (a, b, sign) => { const p = pairFor(a, b); return p && p.p < segmentState.alpha && sign * signedDiff(a, b) > 0; };
+    const best = methods.find(m => methods.every(o => o === m || significantly(m, o, -1))) || null;
+    const worst = methods.find(m => methods.every(o => o === m || significantly(m, o, 1))) || null;
+    const vsHeuristics = methods.map(model => ({
+      model,
+      bestObserved: segmentPairedTest(group, item => item.loss[model], item => item.bestObserved),
+      regression: segmentPairedTest(group, item => item.loss[model], item => item.regression),
+    }));
+    const label = splitDim ? `${rowDim.name(v1)} · ${splitDim.name(v2)}` : rowDim.name(v1);
+    return { label, n: group.length, clusters: new Set(group.map(item => item.cluster)).size, means, bestObserved, regression, pairs, best, worst, vsHeuristics };
+  }) };
+}
+
+function segmentMarker(shape, x, y, color, size = 7, title = "") {
+  const t = title ? `<title>${title}</title>` : "";
+  if (shape === "square") return `<rect x="${x - size}" y="${y - size}" width="${2 * size}" height="${2 * size}" fill="${color}" stroke="#fff" stroke-width="1.5">${t}</rect>`;
+  if (shape === "diamond") return `<path d="M${x} ${y - size - 2} L${x + size + 2} ${y} L${x} ${y + size + 2} L${x - size - 2} ${y} Z" fill="${color}" stroke="#fff" stroke-width="1.5">${t}</path>`;
+  return `<circle cx="${x}" cy="${y}" r="${size + 1}" fill="${color}" stroke="#fff" stroke-width="1.5">${t}</circle>`;
+}
+
+function renderSegmentChart(summary) {
+  const { methods, items } = summary;
+  const rowH = 46, top = 64, labelW = 300, plotW = 470, gap = 84, colW = 92;
+  const width = labelW + plotW + gap + 2 * colW + 10;
+  const height = top + Math.max(items.length, 1) * rowH + 52;
+  const visible = items.flatMap(item => [...methods.map(m => item.means[m]), item.bestObserved]).filter(Number.isFinite).map(v => v * 100);
+  const xMax = Math.max(10, Math.ceil((Math.max(0, ...visible) * 1.15) / 5) * 5);
+  const sx = v => labelW + (Math.min(v, xMax) / xMax) * plotW;
+  const ticks = []; for (let t = 0; t <= xMax + 1e-9; t += xMax > 40 ? 10 : 5) ticks.push(t);
+  let svg = `<svg class="segment-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Mean relative revenue loss by segment">`;
+  ticks.forEach(t => {
+    svg += `<line x1="${sx(t)}" x2="${sx(t)}" y1="${top - 14}" y2="${top + items.length * rowH}" stroke="#e6e8eb"/>`;
+    svg += `<text x="${sx(t)}" y="${top + items.length * rowH + 18}" text-anchor="middle" class="segment-tick">${t}</text>`;
+  });
+  svg += `<line x1="${labelW}" x2="${labelW}" y1="${top - 14}" y2="${top + items.length * rowH}" stroke="#7a828a"/>`;
+  svg += `<line x1="${labelW}" x2="${labelW + plotW}" y1="${top + items.length * rowH}" y2="${top + items.length * rowH}" stroke="#7a828a"/>`;
+  svg += `<text x="${labelW + plotW / 2}" y="${top + items.length * rowH + 42}" text-anchor="middle" class="segment-axis">Mean relative revenue loss (percentage points; 0 = optimal price)</text>`;
+  const c1 = labelW + plotW + gap + colW / 2, c2 = c1 + colW;
+  svg += `<text x="${c1}" y="${top - 30}" text-anchor="middle" class="segment-colhead">Clear</text><text x="${c1}" y="${top - 16}" text-anchor="middle" class="segment-colhead">best LLM</text>`;
+  svg += `<text x="${c2}" y="${top - 30}" text-anchor="middle" class="segment-colhead">Clear</text><text x="${c2}" y="${top - 16}" text-anchor="middle" class="segment-colhead">worst LLM</text>`;
+  items.forEach((item, i) => {
+    const y = top + i * rowH + rowH / 2;
+    svg += `<line x1="${labelW}" x2="${labelW + plotW}" y1="${y}" y2="${y}" stroke="#eef0f2" stroke-width="6"/>`;
+    svg += `<text x="${labelW - 14}" y="${y + 4}" text-anchor="end" class="segment-label">${item.label}</text>`;
+    svg += `<text x="${labelW - 14}" y="${y + 18}" text-anchor="end" class="segment-sub">${fmtInt(item.n)} cases · ${item.clusters} price histories</text>`;
+    const reg = item.regression * 100, bo = item.bestObserved * 100;
+    if (Number.isFinite(reg)) {
+      if (reg <= xMax) svg += `<line x1="${sx(reg)}" x2="${sx(reg)}" y1="${y - 13}" y2="${y + 13}" stroke="${SEGMENT_REGRESSION_COLOR}" stroke-width="4"><title>Regression heuristic: ${reg.toFixed(2)}</title></line>`;
+      else svg += `<text x="${labelW + plotW + 8}" y="${y + 4}" text-anchor="start" class="segment-off" fill="${SEGMENT_REGRESSION_COLOR}">reg. ${reg.toFixed(0)} →<title>Regression heuristic: ${reg.toFixed(2)}</title></text>`;
+    }
+    if (Number.isFinite(bo)) svg += `<line x1="${sx(bo)}" x2="${sx(bo)}" y1="${y - 13}" y2="${y + 13}" stroke="${SEGMENT_BEST_OBSERVED_COLOR}" stroke-width="4"><title>Best-observed price: ${bo.toFixed(2)}</title></line>`;
+    methods.forEach(model => {
+      const v = item.means[model] * 100, style = SEGMENT_STYLE[model] || { shape: "circle", color: "#888" };
+      if (Number.isFinite(v)) svg += segmentMarker(style.shape, sx(v), y, style.color, 7, `${model}: ${v.toFixed(2)}`);
+    });
+    const mark = (model, x) => model ? segmentMarker((SEGMENT_STYLE[model] || {}).shape, x, y, (SEGMENT_STYLE[model] || {}).color, 7, model) : `<text x="${x}" y="${y + 4}" text-anchor="middle" class="segment-none">–</text>`;
+    svg += mark(item.best, c1) + mark(item.worst, c2);
+  });
+  return svg + "</svg>";
+}
+
+function renderSegmentCompare() {
+  const summary = segmentSummaries();
+  const { methods, items } = summary;
+  document.querySelector("#caseCount").textContent = fmtInt(summary.total);
+  document.querySelector("#completeCount").textContent = fmtInt(summary.total);
+  const shortName = m => m.replace(" Preview", "");
+  const legend = methods.map(m => { const s = SEGMENT_STYLE[m] || {}; return `<span class="segment-key"><svg width="20" height="20" viewBox="0 0 20 20">${segmentMarker(s.shape, 10, 10, s.color, 6)}</svg>${shortName(m)}</span>`; }).join("")
+    + `<span class="segment-key"><svg width="12" height="20"><line x1="6" x2="6" y1="2" y2="18" stroke="${SEGMENT_BEST_OBSERVED_COLOR}" stroke-width="4"/></svg>Best-observed price</span>`
+    + `<span class="segment-key"><svg width="12" height="20"><line x1="6" x2="6" y1="2" y2="18" stroke="${SEGMENT_REGRESSION_COLOR}" stroke-width="4"/></svg>Regression heuristic</span>`;
+  document.querySelector("#segmentLegend").innerHTML = legend;
+  document.querySelector("#segmentChart").innerHTML = items.length ? renderSegmentChart(summary) : `<p class="quiet">No cases match the selected filters.</p>`;
+  const alphaText = segmentState.alpha === 0.1 ? "10%" : segmentState.alpha === 0.01 ? "1%" : "5%";
+  document.querySelector("#segmentNote").innerHTML = `<strong>${fmtInt(summary.total)} ${segmentState.tier} cases in ${items.length} segment${items.length === 1 ? "" : "s"}</strong><span>Each case is scored by its mean relative revenue loss over its runs (basic models: 5 runs; advanced models: 2 runs); failed answers count as a 100% loss, as do failed regression fits. A <strong>clear best LLM</strong> has a mean loss significantly lower than both other LLMs, and a <strong>clear worst LLM</strong> a mean loss significantly higher than both, at the ${alphaText} level. Tests are paired t tests on case-level losses with standard errors clustered by price history. When the regression heuristic lies beyond the axis, its mean is printed at the right edge.</span>`;
+  const pCell = p => `<td class="${Number.isFinite(p) && p < segmentState.alpha ? "segment-sig" : ""}">${fmtP(p)}</td>`;
+  const pairHead = items[0] ? items[0].pairs.map(p => `<th>${shortName(p.a).split(" ")[0]} − ${shortName(p.b).split(" ")[0]}</th><th>p</th>`).join("") : "";
+  document.querySelector("#segmentTable thead").innerHTML = `<tr><th>Segment</th><th>Cases</th>${methods.map(m => `<th>${shortName(m)}</th>`).join("")}<th>Best-observed</th><th>Regression</th>${pairHead}<th>Clear best</th><th>Clear worst</th></tr>`;
+  document.querySelector("#segmentTable tbody").innerHTML = items.map(item => `<tr><th>${item.label}</th><td>${fmtInt(item.n)}</td>${methods.map(m => `<td>${fmtLoss(item.means[m])}</td>`).join("")}<td>${fmtLoss(item.bestObserved)}</td><td>${fmtLoss(item.regression)}</td>${item.pairs.map(p => `<td>${Number.isFinite(p.diff) ? (p.diff * 100).toFixed(2) : "-"}</td>${pCell(p.p)}`).join("")}<td>${item.best ? shortName(item.best) : "–"}</td><td>${item.worst ? shortName(item.worst) : "–"}</td></tr>`).join("");
+  document.querySelector("#segmentHeuristicTable thead").innerHTML = `<tr><th>Segment</th>${methods.map(m => `<th>${shortName(m)} − BO</th><th>p</th>`).join("")}${methods.map(m => `<th>${shortName(m)} − Reg.</th><th>p</th>`).join("")}</tr>`;
+  document.querySelector("#segmentHeuristicTable tbody").innerHTML = items.map(item => `<tr><th>${item.label}</th>${item.vsHeuristics.map(v => `<td>${Number.isFinite(v.bestObserved.diff) ? (v.bestObserved.diff * 100).toFixed(2) : "-"}</td>${pCell(v.bestObserved.p)}`).join("")}${item.vsHeuristics.map(v => `<td>${Number.isFinite(v.regression.diff) ? (v.regression.diff * 100).toFixed(2) : "-"}</td>${pCell(v.regression.p)}`).join("")}</tr>`).join("");
+}
+
+function initSegmentControls() {
+  const filterBox = document.querySelector("#segmentFilters");
+  filterBox.innerHTML = SEGMENT_FILTER_DIMENSIONS.map(dim => {
+    const d = SEGMENT_DIMENSIONS[dim];
+    return `<fieldset class="segment-filter"><legend>${d.label}</legend>${d.levels.map(level => `<label><input type="checkbox" data-dim="${dim}" value="${level}" checked> ${d.name(level)}</label>`).join("")}</fieldset>`;
+  }).join("");
+  filterBox.addEventListener("change", () => {
+    SEGMENT_FILTER_DIMENSIONS.forEach(dim => {
+      const boxes = [...filterBox.querySelectorAll(`input[data-dim="${dim}"]`)];
+      segmentState.filters[dim] = boxes.every(b => b.checked) ? null : new Set(boxes.filter(b => b.checked).map(b => b.value));
+    });
+    renderSegmentCompare();
+  });
+  const options = Object.entries(SEGMENT_DIMENSIONS).map(([key, d]) => `<option value="${key}">${d.label}</option>`).join("");
+  document.querySelector("#segmentRowsBy").innerHTML = options;
+  document.querySelector("#segmentSplitBy").innerHTML = `<option value="none">None</option>` + options;
+  document.querySelector("#segmentRowsBy").value = segmentState.rowsBy;
+  document.querySelector("#segmentSplitBy").value = segmentState.splitBy;
+  document.querySelector("#segmentTier").addEventListener("change", e => { segmentState.tier = e.target.value; renderSegmentCompare(); });
+  document.querySelector("#segmentRowsBy").addEventListener("change", e => { segmentState.rowsBy = e.target.value; renderSegmentCompare(); });
+  document.querySelector("#segmentSplitBy").addEventListener("change", e => { segmentState.splitBy = e.target.value; renderSegmentCompare(); });
+  document.querySelector("#segmentAlpha").addEventListener("change", e => { segmentState.alpha = Number(e.target.value); renderSegmentCompare(); });
+}
+
+initSegmentControls();

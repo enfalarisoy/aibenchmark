@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Pricing Benchmarks · All Data</title>
-  <link rel="stylesheet" href="styles.css?v=11.1">
+  <link rel="stylesheet" href="styles.css?v=11.2">
 </head>
 <body>
   <header class="topbar">
@@ -32,6 +32,7 @@
       <button class="tab" data-tab="fittedDemand">Regression Heuristic Fitted Demands</button>
       <button class="tab" data-tab="advancedModels">Advanced Models</button>
       <button class="tab" data-tab="noiseRole">Role of Noise</button>
+      <button class="tab" data-tab="segmentCompare">Segment Comparison</button>
     </nav>
     <p id="tabDescription" class="tab-description"></p>
 
@@ -1299,6 +1300,53 @@
         </div>
       </article>
     </section>
+    <section id="segmentCompare" class="panel">
+      <div class="toolbar card" aria-label="Segment comparison controls">
+        <label>Model tier
+          <select id="segmentTier">
+            <option value="basic">Basic models</option>
+            <option value="advanced">Advanced models</option>
+          </select>
+        </label>
+        <label>Rows by
+          <select id="segmentRowsBy"></select>
+        </label>
+        <label>Split rows by
+          <select id="segmentSplitBy"></select>
+        </label>
+        <label>Significance level
+          <select id="segmentAlpha">
+            <option value="0.05">5%</option>
+            <option value="0.1">10%</option>
+            <option value="0.01">1%</option>
+          </select>
+        </label>
+      </div>
+      <div class="card segment-filters" id="segmentFilters" aria-label="Segment filters"></div>
+      <article class="comparison-note card" id="segmentNote"></article>
+      <article class="card">
+        <div class="card-heading">
+          <h2>Mean loss by segment</h2>
+          <span>Each LLM, the best-observed price and the regression heuristic, with the clear best and worst LLM in each segment</span>
+        </div>
+        <div class="segment-legend" id="segmentLegend"></div>
+        <div class="segment-chart-wrap" id="segmentChart"></div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>LLM comparisons by segment</h2>
+          <span>Mean loss and paired differences between LLMs (percentage points); highlighted p-values are below the selected level</span>
+        </div>
+        <div class="table-wrap"><table id="segmentTable"><thead></thead><tbody></tbody></table></div>
+      </article>
+      <article class="card table-card">
+        <div class="card-heading">
+          <h2>LLMs versus the heuristics by segment</h2>
+          <span>LLM mean loss minus heuristic mean loss (percentage points); positive values mean the LLM loses more</span>
+        </div>
+        <div class="table-wrap"><table id="segmentHeuristicTable"><thead></thead><tbody></tbody></table></div>
+      </article>
+    </section>
 
     <section id="within" class="panel" hidden>
       <div class="toolbar card" aria-label="Within-model controls">
@@ -1314,8 +1362,8 @@
 
   <footer>
     <div>Lower relative revenue loss is better. Cases remain in the analysis, and relative revenue loss is capped at 100% when evaluated revenue would otherwise be negative. Regression fits with a non-positive fitted price and AI rows without a valid answer count as 100% revenue loss; they have no usable price, so price-gap and pricing-direction metrics leave them out. Loss summaries use cases with valid numeric answers for every model in the comparison.</div>
-    <div>11.1</div>
+    <div>11.2</div>
   </footer>
-  <script src="app.js?v=11.1"></script>
+  <script src="app.js?v=11.2"></script>
 </body>
 </html>
